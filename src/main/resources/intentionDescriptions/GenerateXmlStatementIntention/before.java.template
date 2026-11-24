@@ -1,0 +1,3 @@
+public interface UserMapper {
+    <spot>int insert(User record);</spot>
+}

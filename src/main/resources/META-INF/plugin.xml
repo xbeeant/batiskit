@@ -1,0 +1,588 @@
+<!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <!-- Unique identifier of the plugin. It should be FQN. It cannot be changed between the plugin versions. -->
+    <id>io.github.xbeeant.batiskit</id>
+
+    <name>BatisKit</name>
+
+    <vendor email="huangxb0512@gmail.com" url="https://beeant0512.github.io">Beeant</vendor>
+
+    <!-- 插件介绍的唯一来源：不要在 build.gradle.kts 的 pluginConfiguration 里再写 description，
+         否则 patchPluginXml 会用它覆盖这里。版本说明（change-notes）由 org.jetbrains.changelog
+         从 CHANGELOG.md 自动注入，不需要也不应该在这里手写。
+         verifyPluginStructure 用 ^[\w\s\p{Punct}]{40,} 校验 description 经 HTML 解析后的纯文本，
+         即开头 40 个字符必须是拉丁字母 / 数字 / ASCII 标点，中文出现在前 40 字里就会被判非法；
+         因此下面先写一段英文导语，中文正文从它之后开始。 -->
+
+    <description><![CDATA[
+    Batis Kit is a template-driven code generator for Spring and MyBatis projects. Select tables in the Database view, right-click "Generate Code", and choose a template set to produce the full layered code.
+
+    <p>在 Database 视图中选中表，右键「生成代码」，选一套模板方案即可生成整套分层代码。</p>
+    <ul>
+        <li>模板驱动：<code>templates/&lt;方案&gt;/</code> 下的每个 tpl 就是该方案要生成的一个文件，写什么就生成什么（lombok、swagger、基类、注解全部写在模板里），插件只替换表名 / 字段 / 类型这些数据库相关内容</li>
+        <li>内置两套方案：mybatis / mybatis-plus（Entity / Mapper + XML / Service / Controller / DTO / VO / Converter 等分层，依赖内部基类）与 mybatis-pure / mybatis-plus-pure（不继承任何父类、自包含全套 CRUD 的纯模板）</li>
+        <li>自定义方案：把 tpl 放进 <code>templates/&lt;方案&gt;/</code> 就多一套方案，改完即时生效；同 id 的用户模板会覆盖内置模板</li>
+        <li>导航：Mapper 接口 / 方法 ↔ Mapper XML 语句片段双向跳转（侧栏图标 + Ctrl+B）</li>
+        <li>时序图：光标放在 Java / Kotlin 方法里，右键「生成时序图」或按 Alt+S 生成 PSI / UAST 调用链（生命线 / 激活条 / 递归回边），双击箭头跳声明，导出 SVG / PlantUML / Mermaid；Kotlin → Java 混合调用链也能下钻；MyBatis / MyBatis-Plus 工程可继续追踪到数据库层——Mapper 方法落到 SQL 与数据库表，双击 SQL 箭头跳 XML 语句、双击表头跳 Database 视图；消息上限可配置、窗口可缩放与最大化、PlantUML / Mermaid 导出保留完整字符串；跳过的基础类 / 工具类名单不再写死，可在 Settings → Tools → Batis Kit → 时序图 里编辑包前缀 / 简单类名 / 例外名单</li>
+        <li>log：底部「MyBatis Log」工具窗口自动捕获控制台里的 MyBatis 日志，把 `?` 换成参数还原成可执行 SQL；SQL 关键字 / 参数着色预览、多关键字 AND / 排除 / 正则搜索、四种排序、格式化 / 复制 / 控制台右键还原 / 文本还原工作台；可配 Preparing / Parameters 前缀、结束标识、单行长度、iBatis 2.x 日志与关键字隐藏；工具栏与右键可按 SQL 文本相似度反查并跳到对应的 Mapper XML 语句，多个相近候选时弹出带分数的选择器</li>
+        <li>Grep Console：控制台日志按 ERROR / WARN / INFO 等级别着色，自定义关键词高亮与日志过滤；底部工具窗口一键筛出错误日志并可排序；Grep 子控制台支持表达式预设 / 最近使用、命中计数与命中片段高亮（底色可在设置页用色板或 hex 配置）</li>
+        <li>inspect：Mapper XML 静态检查——`#{…}` 参数绑定、语句 id 与接口方法互查（重复 id / 孤立语句 / 方法缺语句）、`${}` SQL 注入风险、返回类型与 resultType 匹配，带 Alt+Enter 修复</li>
+        <li>rename：Mapper XML 重命名与 Find Usages——语句 id ↔ 接口方法双向重命名、resultMap / &lt;sql&gt; 片段定义与引用同步改写、&lt;include refid&gt; 跳转与补全、&lt;sql id&gt; 与 &lt;include&gt; 行的侧栏图标 / Ctrl+B 一处查看全部使用处、重命名接口时 namespace 与 XML 文件名跟随、resultType 等类型属性类名补全；未加 @Mapper 的接口上 Alt+Enter 补注解</li>
+        <li>Mapper XML 格式化：接管 Ctrl+Alt+L，只动空白不改字符、动态 SQL 逐层缩进、SQL 正文按行保留，支持选区格式化与保存时自动格式化；总开关与缩进宽度可在 Settings 里配置</li>
+        <li>Mapper 辅助：表字段智能提示（主动读 IDE 已配置数据源 / 离线快照 / 实体类 / resultMap 四路合并，首次使用无需先选表）、SQL 上下文参数补全、Alt+Enter 按可配置方法前缀生成带表名的 CRUD SQL；导航图标总开关避免与其它 MyBatis 插件重复图标；自动记忆最近使用的数据源 / 表，不连 JDBC、不保存连接凭据</li>
+        <li>Spring API：右侧工具窗口列出全工程 Spring MVC / @Scheduled / Dubbo 接口，右键「复制完整 URL」/「复制为 cURL」，自动探测 Spring Boot 1.x / 2.x / 3.x、WebFlux、多 profile 配置下的 context path；Nacos 等配置中心的远端值会提示确认，也可手动覆盖接口地址</li>
+        <li>GenerateAllSetter：光标放在对象上（或选中对象表达式），右键 / Alt+Enter 一键生成全部 setter 调用并填入按类型推导的默认值，支持继承、链式 setter、Lombok 与裸 `new X()` 语句</li>
+        <li>rainbow：语言无关的彩虹括号——`()` `[]` `{}` 按嵌套层级循环着色，XML 标签尖括号与标签名可按层级着色；最多 10 层颜色并可按色相生成配色，语言 / 扩展名黑白名单可配，右键可高亮当前括号作用域（重复触发向外扩展），颜色在 Color Scheme 里改、编辑器右键可快速开关</li>
+        <li>生成安全：后台可取消渲染、写盘前变更预览（按文件 / 按模板勾选，产物清单可搜索 / 排序 / 显示结果计数）、整批 Ctrl+Z 撤销、新建产物带来源标记；生成弹窗的表清单同样支持搜索、点列头排序与结果计数</li>
+        <li>模板工作台：.tpl 语法高亮、模型键与指令补全、废弃键迁移提示、用示例表实时预览渲染结果；整套模板方案可导出成单个 XML 发给同事（头部注释与字段顺序逐字保留），导入后成为自包含的新方案</li>
+        <li>漂移检查与同步：Database 视图右键「比对已生成代码」，双向列出缺字段 / 类型不一致 / 多出字段 / 产物未生成，可按模板选择性重新生成</li>
+        <li>字符串处理神器：选中文本（或光标放在单词上按 Alt+Enter）一键做大小写 / 驼峰与下划线 / 帕斯卡命名互转、URL 与 Base64 编解码、排序、去重、拼接，转换前可切换作用范围并逐条预览结果；另有「String Manipulation」工具窗口可调分隔符与排序选项，模板里用 <code>$str.*</code> 直接调用同一套转换</li>
+        <li>JSON → Java 对象：一次贴多份 JSON 样本取字段并集，字段表可编辑 / 搜索 / 点列头排序 / 显示结果计数 + 代码实时预览；支持 fastjson / fastjson2 / gson / jackson 注解叠加、lombok、record、日期与数字精度识别、动态 key 折成 Map，已有类按「缺什么补什么」合并</li>
+        <li>设置与入口：Settings → Tools → Batis Kit 父页可把十组偏好导出 / 导入 / 恢复默认，另有「模块开关」子页可整体启停各个能力模块、时序图子页可编辑跳过的基础类 / 工具类名单，Grep Console 的两张规则表可搜索与排序（只影响显示、不改执行顺序）；编辑器与项目视图右键统一收在「Batis Kit」子菜单下，快捷键按 macOS 与 Windows / Linux 分别注册（Cmd ↔ Ctrl）</li>
+        <li>Alt+Enter 唤出右键操作：编辑器右键「Batis Kit」子菜单里的每一项——顶层动作（JSON → Java 对象 / 格式化 Mapper XML / 还原 MyBatis SQL / 彩虹括号与作用域高亮 / 模板工作台 / 生成时序图）、「搜索全部转换…」与三个子菜单（String Manipulation / 远程仓库链接 / Git Toolbox）——都按同样的名字与顺序出现在 Alt+Enter 意图列表里；文案与可用条件跟右键完全同源（update() 动态改写的语言包文案、时序图根方法名也逐字一致），子菜单选中后弹出与右键一模一样的整份菜单，支持速度搜索，模块开关关闭时一并隐藏</li>
+        <li>接口调试：Spring API 列表右键「发送请求…」在 IDE 里编辑参数并试调接口，响应可查看、可「另存为 .http」交给原生 HTTP Client；源码变化后接口列表自动重扫</li>
+        <li>平台化：十组设置都能在 Settings 搜索框搜到、模块开关可整体启停各能力避免与本机原版插件重复入口、Mapper 方法上方 Code Vision 显示 XML 语句行数、时序图三种文本格式均可落盘并可导出 PNG、Alt+Enter 支持预览改动、签名发布与 Plugin Verifier 兼容门禁已接入 CI</li>
+    </ul>
+    <p>表结构直接取自 Database 视图的元数据，不需要再填一次数据库连接；再次生成时按「缺什么补什么」合并进已有文件，不覆盖人工修改。</p>
+    ]]></description>
+
+    <!-- Product and plugin compatibility requirements.
+         Read more: https://plugins.jetbrains.com/docs/intellij/plugin-compatibility.html -->
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.java</depends>
+    <depends>com.intellij.database</depends>
+    <depends>com.intellij.modules.vcs</depends>
+    <depends>Git4Idea</depends>
+    <!-- 刻意不声明 org.jetbrains.kotlin 依赖：时序图的 Kotlin 支持只走平台自带的 UAST
+         （org.jetbrains.uast.*），编译期不引用任何 Kotlin PSI 类；KtFile → UMethod 的转换器由
+         装了的 Kotlin 插件自行注册，IDE 打开 .kt 文件时它必然已加载。声明 optional depends 反而会
+         触发插件校验要求 config-file 与 <org.jetbrains.kotlin.supportsKotlinPluginMode>，后者是
+         2024.2.1+ 才有的扩展点，与 sinceBuild=241 冲突。未安装 Kotlin 插件时 Java 时序图与其余功能照常。 -->
+
+    <extensions defaultExtensionNs="com.intellij">
+        <errorHandler implementation="com.intellij.diagnostic.JetBrainsMarketplaceErrorReportSubmitter"/>
+
+        <!-- .tpl 不再是纯文本：指令 / 变量 / 大括号占位符 / 原样块有专属配色 -->
+        <fileType name="Batis Kit Template"
+                  language="BatisKitTemplate"
+                  implementationClass="io.github.xbeeant.batiskit.template.ide.TemplateFileType"
+                  fieldName="INSTANCE"
+                  extensions="tpl"/>
+        <lang.syntaxHighlighterFactory language="BatisKitTemplate"
+                  implementationClass="io.github.xbeeant.batiskit.template.ide.TemplateSyntaxHighlighterFactory"/>
+
+        <!-- 用户自定义生成模板的持久化（IDE 全局，跨工程复用） -->
+        <applicationService serviceImplementation="io.github.xbeeant.batiskit.template.TemplateSettings"/>
+
+        <!-- 设置菜单的父节点：Tools → Batis Kit，下面各组设置全部挂在它下面。
+             父节点是 application 级，平台允许它同时容纳 application / project 级的子项 -->
+        <applicationConfigurable parentId="tools"
+                                 id="io.github.xbeeant.batiskit"
+                                 displayName="Batis Kit"
+                                 instance="io.github.xbeeant.batiskit.settings.BatisKitettingsGroup"/>
+
+        <!-- JSON → Java 对象：全局默认配置（IDE 全局，与生成器配置分开存） -->
+        <applicationService serviceImplementation="io.github.xbeeant.batiskit.json.JsonState"/>
+        <applicationConfigurable parentId="io.github.xbeeant.batiskit"
+                                 id="io.github.xbeeant.batiskit.json.settings"
+                                 displayName="JSON → Java 对象"
+                                 instance="io.github.xbeeant.batiskit.json.ui.JsonSettingsConfigurable"/>
+
+        <!-- Rainbow Brackets：语言无关的括号层级高亮（highlightVisitor 不按语言注册，一套实现覆盖所有语言） -->
+        <highlightVisitor implementation="io.github.xbeeant.batiskit.rainbow.RainbowHighlightVisitor"/>
+        <!-- 配色页属于平台的 Color Scheme 分组，不能挪到 Tools 下 -->
+        <colorSettingsPage implementation="io.github.xbeeant.batiskit.rainbow.RainbowColorSettingsPage"/>
+        <!-- Settings → Tools → Batis Kit → Rainbow Brackets：开关 / 标签名 / 循环层数（最多 10）/ 黑白名单 / 大小上限 / 颜色生成器 -->
+        <applicationConfigurable parentId="io.github.xbeeant.batiskit"
+                                 id="io.github.xbeeant.batiskit.rainbow.settings"
+                                 displayName="Rainbow Brackets"
+                                 instance="io.github.xbeeant.batiskit.rainbow.RainbowSettingsConfigurable"/>
+
+        <!-- 设置 → Tools → Batis Kit → Generator（全局配置，与工程无关） -->
+        <applicationConfigurable parentId="io.github.xbeeant.batiskit"
+                                 id="io.github.xbeeant.batiskit.settings"
+                                 displayName="Generator"
+                                 instance="io.github.xbeeant.batiskit.settings.GeneratorSettingsConfigurable"/>
+
+        <!-- 设置 → Tools → Batis Kit → Git Toolbox（工程级） -->
+        <projectConfigurable parentId="io.github.xbeeant.batiskit"
+                             id="io.github.xbeeant.batiskit.git.settings"
+                             displayName="Git Toolbox"
+                             instance="io.github.xbeeant.batiskit.git.GitSettingsConfigurable"/>
+
+        <notificationGroup id="Batis Kit Generator" displayType="BALLOON"/>
+        <notificationGroup id="Git Toolbox" displayType="BALLOON"/>
+        <notificationGroup id="Batis Kit API" displayType="BALLOON"/>
+        <notificationGroup id="MyBatis Log" displayType="BALLOON"/>
+        <notificationGroup id="String Manipulation" displayType="BALLOON"/>
+        <notificationGroup id="Grep Console" displayType="BALLOON"/>
+        <notificationGroup id="Mapper XML 格式化" displayType="BALLOON"/>
+
+        <!-- 设置 → Tools → Batis Kit → MyBatis Log（工程级） -->
+        <projectConfigurable parentId="io.github.xbeeant.batiskit"
+                             id="io.github.xbeeant.batiskit.log.settings"
+                             displayName="MyBatis Log"
+                             instance="io.github.xbeeant.batiskit.log.MyBatisLogSettingsConfigurable"/>
+
+        <!-- 底部工具窗口：捕获 Run / Debug 控制台里的 MyBatis 日志并还原成可执行 SQL -->
+        <toolWindow id="MyBatis Log"
+                    anchor="bottom"
+                    secondary="true"
+                    factoryClass="io.github.xbeeant.batiskit.log.ui.MyBatisLogToolWindowFactory"/>
+
+        <!-- MyBatis Log：工程打开即挂上进程监听，避免漏掉启动阶段打印的 SQL -->
+        <backgroundPostStartupActivity implementation="io.github.xbeeant.batiskit.log.MyBatisLogStartup"/>
+
+        <!-- Mapper XML 格式化：接管 Mapper XML 的 Ctrl+Alt+L（平台自带格式化器会把动态 SQL 排坏） -->
+        <externalFormatProcessor implementation="io.github.xbeeant.batiskit.format.MapperXmlExternalFormatter"/>
+        <!-- 保存时格式化：必须走扩展点而非消息总线 topic，平台不允许在 topic 回调里改 document -->
+        <fileDocumentManagerListener
+                implementation="io.github.xbeeant.batiskit.format.MapperXmlSaveFormatListener"/>
+        <!-- Settings → Tools → Batis Kit → Mapper XML 格式化：总开关 / 缩进宽度 / 保存时格式化 -->
+        <applicationConfigurable parentId="io.github.xbeeant.batiskit"
+                                 id="io.github.xbeeant.batiskit.format.settings"
+                                 displayName="Mapper XML 格式化"
+                                 instance="io.github.xbeeant.batiskit.format.MapperXmlFormatConfigurable"/>
+
+        <!-- Settings → Tools → Batis Kit → Mapper 辅助：自动发现开关 / 导航开关 / 字段补全 / 前缀规则 / 表名映射 / 记忆状态 -->
+        <applicationConfigurable parentId="io.github.xbeeant.batiskit"
+                                 id="io.github.xbeeant.batiskit.mapper.assist.settings"
+                                 displayName="Mapper 辅助"
+                                 instance="io.github.xbeeant.batiskit.settings.MapperAssistSettingsConfigurable"/>
+
+        <!-- Settings → Tools → Batis Kit → 模块开关：按模块启停能力，避免与本机其它插件重复入口 -->
+        <applicationConfigurable parentId="io.github.xbeeant.batiskit"
+                                 id="io.github.xbeeant.batiskit.modules.settings"
+                                 displayName="模块开关"
+                                 instance="io.github.xbeeant.batiskit.settings.ModuleTogglesConfigurable"/>
+
+        <!-- Settings → Tools → Batis Kit → 时序图：基础类 / 工具类名单（原先写死在 SequenceRules 里） -->
+        <applicationService serviceImplementation="io.github.xbeeant.batiskit.sequence.SequenceDiagramSettings"/>
+        <applicationConfigurable parentId="io.github.xbeeant.batiskit"
+                                 id="io.github.xbeeant.batiskit.sequence.settings"
+                                 displayName="时序图"
+                                 instance="io.github.xbeeant.batiskit.settings.SequenceDiagramSettingsConfigurable"/>
+
+        <!-- Grep Console：控制台日志按级别着色 / 自定义关键词高亮（平台标准扩展点） -->
+        <consoleFilterProvider implementation="io.github.xbeeant.batiskit.console.GrepConsoleFilterProvider"/>
+        <!-- 自动链接 / 快速导航：正文中的 FQN 与项目相对路径可点击跳转（URL 与堆栈行由平台自带） -->
+        <consoleFilterProvider implementation="io.github.xbeeant.batiskit.console.ConsoleLinkFilterProvider"/>
+        <!-- 在文本写入 ConsoleView 之前按规则链 / 级别 / 关键词移除或改写，默认关闭 -->
+        <consoleInputFilterProvider implementation="io.github.xbeeant.batiskit.console.GrepConsoleInputFilterProvider"/>
+
+        <!-- 设置 → Tools → Batis Kit → Grep Console（工程级） -->
+        <projectConfigurable parentId="io.github.xbeeant.batiskit"
+                             id="io.github.xbeeant.batiskit.console.settings"
+                             displayName="Grep Console"
+                             instance="io.github.xbeeant.batiskit.console.GrepConsoleConfigurable"/>
+
+        <!-- 底部工具窗口：按级别收集日志，一键只看 ERROR -->
+        <toolWindow id="Grep Console"
+                    anchor="bottom"
+                    secondary="true"
+                    factoryClass="io.github.xbeeant.batiskit.console.ui.GrepConsoleToolWindowFactory"/>
+
+        <!-- 工程打开就挂上进程监听，启动阶段打印的日志也能收集到 -->
+        <backgroundPostStartupActivity implementation="io.github.xbeeant.batiskit.console.GrepConsoleStartup"/>
+
+        <!-- 右侧工具窗口：查看 & 搜索 Spring 接口（含 @Scheduled 方法） -->
+        <toolWindow id="Spring API"
+                    anchor="right"
+                    secondary="true"
+                    factoryClass="io.github.xbeeant.batiskit.api.ui.ApiToolWindowFactory"/>
+
+        <!-- 右侧工具窗口：字符串一键转换（大小写 / 命名 / 编解码 / 排序 / 去重 / 拼接），带选项与实时结果 -->
+        <toolWindow id="String Manipulation"
+                    anchor="right"
+                    secondary="true"
+                    factoryClass="io.github.xbeeant.batiskit.string.ui.StringToolWindowFactory"/>
+
+        <!-- Mapper 接口 / 方法 ↔ XML 语句片段双向导航（参考 MybatisX） -->
+        <codeInsight.lineMarkerProvider language="JAVA"
+                                        implementationClass="io.github.xbeeant.batiskit.navigation.MapperLineMarkerProvider"/>
+        <codeInsight.lineMarkerProvider language="XML"
+                                        implementationClass="io.github.xbeeant.batiskit.navigation.MapperLineMarkerProvider"/>
+        <gotoDeclarationHandler implementation="io.github.xbeeant.batiskit.navigation.MapperGotoDeclarationHandler"/>
+        <!-- 方法上方 Code Vision：显示对应 XML 语句行数，点击跳转 -->
+        <codeInsight.codeVisionProvider
+                implementation="io.github.xbeeant.batiskit.navigation.MapperCodeVisionProvider"/>
+
+        <!-- Mapper XML 参数绑定检查：#{...} / ${...} 在接口方法上绑定不上时提前报错 -->
+        <localInspection language="XML"
+                         shortName="MyBatisMapperParameter"
+                         displayName="Mapper 参数绑定"
+                         groupName="MyBatis"
+                         enabledByDefault="true"
+                         level="ERROR"
+                         implementationClass="io.github.xbeeant.batiskit.inspect.MapperParameterInspection"/>
+        <localInspection language="XML"
+                         shortName="MyBatisMapperStatement"
+                         displayName="Mapper 语句与接口对应"
+                         groupName="MyBatis"
+                         enabledByDefault="true"
+                         level="WARNING"
+                         implementationClass="io.github.xbeeant.batiskit.inspect.MapperStatementInspection"/>
+        <localInspection language="JAVA"
+                         shortName="MyBatisMapperMethod"
+                         displayName="Mapper 方法缺少 XML 语句"
+                         groupName="MyBatis"
+                         enabledByDefault="true"
+                         level="WARNING"
+                         implementationClass="io.github.xbeeant.batiskit.inspect.MapperMethodInspection"/>
+        <localInspection language="XML"
+                         shortName="MyBatisMapperDollar"
+                         displayName="Mapper ${} SQL 注入风险"
+                         groupName="MyBatis"
+                         enabledByDefault="true"
+                         level="WARNING"
+                         implementationClass="io.github.xbeeant.batiskit.inspect.MapperDollarInspection"/>
+        <localInspection language="XML"
+                         shortName="MyBatisMapperReturnType"
+                         displayName="Mapper 返回类型与 resultType 匹配"
+                         groupName="MyBatis"
+                         enabledByDefault="true"
+                         level="ERROR"
+                         implementationClass="io.github.xbeeant.batiskit.inspect.MapperReturnTypeInspection"/>
+
+        <!-- Mapper 方法上的 Alt+Enter 快速修复 -->
+        <intentionAction>
+            <className>io.github.xbeeant.batiskit.navigation.AddParamAnnotationIntention</className>
+            <category>MyBatis</category>
+        </intentionAction>
+        <intentionAction>
+            <className>io.github.xbeeant.batiskit.navigation.GenerateXmlStatementIntention</className>
+            <category>MyBatis</category>
+        </intentionAction>
+        <!-- 绑定了 XML 但没写 @Mapper 的接口：Alt+Enter 补注解（对标 rockjava 的 auto register mapper as spring bean） -->
+        <intentionAction>
+            <className>io.github.xbeeant.batiskit.refactor.AddMapperAnnotationIntention</className>
+            <category>MyBatis</category>
+        </intentionAction>
+
+        <!-- 一键转成 Lombok：类级 @Getter / @Setter，删手写访问器与 serialVersionUID -->
+        <intentionAction>
+            <className>io.github.xbeeant.batiskit.lombok.ConvertToLombokIntention</className>
+            <category>Lombok</category>
+        </intentionAction>
+
+        <!-- 对象赋值神器：光标 / 选区在对象上，Alt+Enter 生成全部 setter 调用（默认值） -->
+        <intentionAction>
+            <className>io.github.xbeeant.batiskit.setter.GenerateAllSetterIntention</className>
+            <category>Java</category>
+        </intentionAction>
+
+        <!-- 编辑器右键动作 → Alt+Enter：右键父菜单（RootGroup）里的每一项都出现在意图列表里，
+             且按 RootGroup 的声明顺序注册。文案（含 update() 动态改写的语言包文案 / 时序图根
+             方法名）、可用性与执行逻辑全部与右键同源；模块开关关闭时一并隐藏。
+             GenerateAllSetter 与「搜索全部转换…」（string 包的 StringManipulationIntention）
+             已有专属 intention，这里刻意不重复注册。 -->
+        <intentionAction>
+            <className>io.github.xbeeant.batiskit.intention.JsonToPojoIntention</className>
+            <category>Batis Kit</category>
+        </intentionAction>
+        <intentionAction>
+            <className>io.github.xbeeant.batiskit.intention.FormatMapperXmlIntention</className>
+            <category>Batis Kit</category>
+        </intentionAction>
+        <intentionAction>
+            <className>io.github.xbeeant.batiskit.intention.RestoreMyBatisSqlIntention</className>
+            <category>Batis Kit</category>
+        </intentionAction>
+        <intentionAction>
+            <className>io.github.xbeeant.batiskit.intention.ToggleRainbowBracketsIntention</className>
+            <category>Batis Kit</category>
+        </intentionAction>
+        <intentionAction>
+            <className>io.github.xbeeant.batiskit.intention.HighlightBracketScopeIntention</className>
+            <category>Batis Kit</category>
+        </intentionAction>
+        <intentionAction>
+            <className>io.github.xbeeant.batiskit.intention.ClearBracketScopeIntention</className>
+            <category>Batis Kit</category>
+        </intentionAction>
+        <intentionAction>
+            <className>io.github.xbeeant.batiskit.intention.TemplateWorkbenchIntention</className>
+            <category>Batis Kit</category>
+        </intentionAction>
+        <intentionAction>
+            <className>io.github.xbeeant.batiskit.intention.SequenceDiagramIntention</className>
+            <category>Batis Kit</category>
+        </intentionAction>
+        <!-- 「搜索全部转换…」：名字与右键父菜单里的 StringChooserAction 条目逐字一致 -->
+        <intentionAction>
+            <className>io.github.xbeeant.batiskit.string.StringManipulationIntention</className>
+            <category>Batis Kit</category>
+        </intentionAction>
+        <!-- 三个子菜单：Alt+Enter 选中后弹出与右键完全同一份 group（含速度搜索），
+             以后往子菜单里加动作无需再注册 intention。 -->
+        <intentionAction>
+            <className>io.github.xbeeant.batiskit.intention.StringManipulationGroupIntention</className>
+            <category>Batis Kit</category>
+        </intentionAction>
+        <intentionAction>
+            <className>io.github.xbeeant.batiskit.intention.GitLinkGroupIntention</className>
+            <category>Batis Kit</category>
+        </intentionAction>
+        <intentionAction>
+            <className>io.github.xbeeant.batiskit.intention.GitToolboxGroupIntention</className>
+            <category>Batis Kit</category>
+        </intentionAction>
+
+        <!-- Mapper XML 里 #{} / ${} 的参数补全（输入 #{ / ${ 或 . 之后提示方法支持的参数） -->
+        <completion.contributor language="XML"
+                                implementationClass="io.github.xbeeant.batiskit.completion.MapperParamCompletionContributor"/>
+        <!-- 表字段补全：SQL 正文里的标识符与 column 属性值（列来自 Database 快照 / 实体类 / resultMap） -->
+        <completion.contributor language="XML"
+                                implementationClass="io.github.xbeeant.batiskit.completion.MapperColumnCompletionContributor"/>
+
+        <!-- Mapper XML 类型属性（resultType 等）的类名补全（rockjava 的「select 的 resultType 校正」）。
+             order="first"：平台的 JavaClassReferenceCompletionContributor 会在结尾无条件 stopHere()
+             并在输入边界处取不到引用，必须让它先跑、先把变体加进结果 -->
+        <completion.contributor language="XML" order="first"
+                                implementationClass="io.github.xbeeant.batiskit.refactor.MapperClassAttrCompletionContributor"/>
+        <!-- <include refid> 的 <sql id> 片段补全：同文件短名 + 其它 namespace 的全限定名 -->
+        <completion.contributor language="XML" order="first"
+                                implementationClass="io.github.xbeeant.batiskit.refactor.MapperSqlRefidCompletionContributor"/>
+        <!-- resultMap / extends / 语句 id / namespace 的补全变体（输入边界处平台取不到引用，需显式列一份） -->
+        <completion.contributor language="XML"
+                                implementationClass="io.github.xbeeant.batiskit.refactor.MapperRefVariantsCompletionContributor"/>
+
+        <!-- Mapper XML 引用体系：语句 id / namespace / resultMap 引用 / <include refid> / Java 类型属性，
+             支撑 Find Usages、Ctrl+B 与重命名跟随（重命名由 renameHandler / elementListenerProvider 承担） -->
+        <psi.referenceContributor language="XML"
+                                  implementation="io.github.xbeeant.batiskit.refactor.MapperReferenceContributor"/>
+        <!-- Mapper XML 内的重命名入口：语句 id → 重命名接口方法；resultMap / sql 定义与引用 → 同步改写定义与引用处 -->
+        <renameHandler implementation="io.github.xbeeant.batiskit.refactor.MapperRenameHandler"/>
+        <!-- Mapper 接口重命名 → 绑定的 XML 文件（<旧类名>.xml）跟着重命名 -->
+        <refactoring.elementListenerProvider
+                implementation="io.github.xbeeant.batiskit.refactor.MapperFileRenameListenerProvider"/>
+
+        <!-- Git Toolbox：状态栏 widget / 启动初始化 -->
+        <statusBarWidgetFactory id="BatisKitGitStatusWidget"
+                                implementation="io.github.xbeeant.batiskit.git.widget.GitStatusWidgetFactory"/>
+        <backgroundPostStartupActivity implementation="io.github.xbeeant.batiskit.git.GitToolboxStartup"/>
+
+        <!-- Git Toolbox：Project View 里的分支 / ahead / behind / 未提交 / tags 显示 -->
+        <projectViewNodeDecorator
+                implementation="io.github.xbeeant.batiskit.git.widget.GitProjectViewDecorator"/>
+
+        <!-- Git Toolbox：提交信息校验（正则 / issue 引用） -->
+        <checkinHandlerFactory
+                implementation="io.github.xbeeant.batiskit.git.commit.CommitMessageCheckinHandlerFactory"/>
+    </extensions>
+
+    <!-- ProjectManagerListener 是 application 级 topic：注册在 projectListeners 下收不到 projectClosing -->
+    <applicationListeners>
+        <listener class="io.github.xbeeant.batiskit.git.PendingChangesChecker"
+                  topic="com.intellij.openapi.project.ProjectManagerListener"/>
+    </applicationListeners>
+
+    <actions>
+        <!-- JSON → Java 对象：编辑器 / 项目视图右键，JSON 来自选区、当前 .json 文件或剪贴板 -->
+        <action id="BatisKit.JsonToPojo"
+                class="io.github.xbeeant.batiskit.json.JsonToPojoAction"
+                text="JSON → Java 对象（Batis Kit）" icon="AllIcons.Nodes.Class"
+                description="把一份或多份 JSON 样本生成 Java 类，支持 fastjson / fastjson2 / gson / jackson 注解、lombok 与 record">
+            <keyboard-shortcut keymap="Mac OS X" first-keystroke="shift meta J"/>
+            <keyboard-shortcut keymap="$default" first-keystroke="shift control J"/>
+        </action>
+
+        <!-- 彩虹括号快速开关（勾选态 = 当前设置，切换后立即重跑高亮） -->
+        <action id="BatisKit.ToggleRainbowBrackets"
+                class="io.github.xbeeant.batiskit.rainbow.ToggleRainbowBracketsAction"
+                text="彩虹括号（Batis Kit）" icon="AllIcons.General.Settings"
+                description="按嵌套层级给括号着色；颜色在 Color Scheme → Rainbow Brackets 里改">
+        </action>
+
+        <!-- 作用域高亮：重复触发向外扩展一层，到最外层后再触发清除；刻意不占用 Esc，避免抢 IDE 的取消操作 -->
+        <action id="BatisKit.HighlightBracketScope"
+                class="io.github.xbeeant.batiskit.rainbow.HighlightBracketScopeAction"
+                text="高亮当前作用域（Batis Kit）" icon="AllIcons.Actions.Search"
+                description="高亮光标所在括号对覆盖的范围与两端括号；重复触发向外扩展一层，到最外层后再触发清除">
+            <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta alt shift B"/>
+            <keyboard-shortcut keymap="$default" first-keystroke="control alt shift B"/>
+        </action>
+        <action id="BatisKit.ClearBracketScope"
+                class="io.github.xbeeant.batiskit.rainbow.ClearBracketScopeAction"
+                text="清除作用域高亮（Batis Kit）" icon="AllIcons.Actions.Refresh"
+                description="清除「高亮当前作用域」加上的临时背景标记（没有高亮时置灰）">
+        </action>
+
+        <action id="BatisKit.GenerateAllSetter"
+                class="io.github.xbeeant.batiskit.setter.GenerateAllSetterAction"
+                text="生成所有 Setter（默认值）" icon="AllIcons.Nodes.Method"
+                description="为光标处 / 选中的对象生成全部 setter 调用，并填入按类型推导的默认值">
+        </action>
+
+        <action id="BatisKit.TemplateWorkbench"
+                class="io.github.xbeeant.batiskit.template.ide.OpenTemplateWorkbenchAction"
+                text="Batis Kit 模板工作台" icon="AllIcons.FileTypes.Text"
+                description="编辑模板、补全模型键、检查废弃键并实时预览渲染结果">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+
+        <action id="BatisKit.RestoreMyBatisSql"
+                class="io.github.xbeeant.batiskit.log.action.RestoreMyBatisSqlAction"
+                text="还原 MyBatis SQL" icon="AllIcons.Actions.Execute"
+                description="把选中的 MyBatis 日志（无选区时取剪贴板）还原成可执行 SQL 并复制">
+            <!-- Run / Debug 控制台里选中日志即可右键还原；编辑器 / 项目视图的入口走 RootGroup -->
+            <add-to-group group-id="ConsoleEditorPopupMenu" anchor="last"/>
+        </action>
+
+        <!-- Mapper XML 格式化：右键手动触发整文件格式化（Ctrl+Alt+L 已由 externalFormatProcessor 接管） -->
+        <action id="BatisKit.FormatMapperXml"
+                class="io.github.xbeeant.batiskit.format.MapperXmlFormatAction"
+                text="格式化 Mapper XML（Batis Kit）" icon="AllIcons.Actions.Edit"
+                description="按 Mapper XML 的规则重新缩进：动态标签独占一行逐层缩进，SQL 正文按行保留">
+        </action>
+
+        <action id="BatisKit.Generate"
+                class="io.github.xbeeant.batiskit.action.GenerateCodeAction"
+                text="生成代码（Batis Kit）" icon="AllIcons.Actions.Execute"
+                description="按选中的模板方案生成整套分层代码，写入前可预览并勾选变更">
+            <add-to-group group-id="DatabaseViewPopupMenu" anchor="first"/>
+            <keyboard-shortcut keymap="Mac OS X" first-keystroke="shift meta G"/>
+            <keyboard-shortcut keymap="$default" first-keystroke="shift control G"/>
+        </action>
+
+        <!-- 时序图：光标放在 Java / Kotlin 方法内，从该方法生成调用链时序图（对标 SequencePlugin） -->
+        <action id="BatisKit.SequenceDiagram"
+                class="io.github.xbeeant.batiskit.sequence.SequenceDiagramAction"
+                text="生成时序图（Sequence Diagram）" icon="AllIcons.Nodes.Method"
+                description="从光标所在的 Java / Kotlin 方法生成调用链时序图（Java 走 PSI、Kotlin 走 UAST），可导出 SVG / PlantUML / Mermaid">
+            <keyboard-shortcut keymap="Mac OS X" first-keystroke="alt S"/>
+            <keyboard-shortcut keymap="$default" first-keystroke="alt S"/>
+        </action>
+
+        <action id="BatisKit.CompareTable"
+                class="io.github.xbeeant.batiskit.action.CompareTableAction"
+                text="比对已生成代码（Batis Kit）" icon="AllIcons.Actions.Diff"
+                description="双向比对表结构与已生成代码，并可按模板选择性重新生成">
+            <add-to-group group-id="DatabaseViewPopupMenu" anchor="after" relative-to-action="BatisKit.Generate"/>
+        </action>
+
+        <!-- 字符串处理神器：编辑器右键的一键转换菜单（分组子菜单由 StringOps.ALL 动态生成） -->
+        <group id="BatisKit.StringManipulation"
+               class="io.github.xbeeant.batiskit.string.StringManipulationGroup"
+               text="String Manipulation（字符串处理神器）" icon="AllIcons.FileTypes.Text"
+               description="大小写 / 命名风格 / URL 与 Base64 编解码 / 排序 / 去重 / 拼接，选中即替换"
+               popup="true">
+        </group>
+
+        <action id="BatisKit.StringManipulationChooser"
+                class="io.github.xbeeant.batiskit.string.StringChooserAction"
+                text="搜索全部字符串转换…" icon="AllIcons.Actions.Search"
+                description="可搜索地列出全部转换操作，并对当前选区实时显示结果预览">
+            <keyboard-shortcut keymap="Mac OS X" first-keystroke="shift alt M"/>
+            <keyboard-shortcut keymap="$default" first-keystroke="shift alt M"/>
+        </action>
+
+        <group id="BatisKit.GitLinkGroup"
+               text="远程仓库链接（Batis Kit）" icon="AllIcons.General.Settings"
+               description="复制或在浏览器打开文件的远程仓库链接"
+               popup="true">
+            <action id="BatisKit.CopyRemoteLink"
+                    class="io.github.xbeeant.batiskit.git.link.CopyRemoteLinkAction"
+                    text="复制远程仓库链接" icon="AllIcons.Actions.Copy"
+                    description="复制当前文件（含行号）的远程仓库链接">
+                <keyboard-shortcut keymap="Mac OS X" first-keystroke="shift meta alt C"/>
+                <keyboard-shortcut keymap="$default" first-keystroke="shift control alt C"/>
+            </action>
+            <action id="BatisKit.OpenRemoteLink"
+                    class="io.github.xbeeant.batiskit.git.link.OpenRemoteLinkAction"
+                    text="在浏览器打开远程链接" icon="AllIcons.Actions.Execute"
+                    description="在浏览器中打开当前文件的远程仓库链接"/>
+            <action id="BatisKit.CopyRepoRootLink"
+                    class="io.github.xbeeant.batiskit.git.link.CopyRepoRootLinkAction"
+                    text="复制仓库根目录链接" icon="AllIcons.Actions.Copy"
+                    description="复制当前仓库首页地址"/>
+            <action id="BatisKit.OpenRepoRootLink"
+                    class="io.github.xbeeant.batiskit.git.link.OpenRepoRootLinkAction"
+                    text="打开仓库根目录" icon="AllIcons.Actions.Execute"
+                    description="在浏览器打开当前仓库首页"/>
+            <action id="BatisKit.CopyCommitLink"
+                    class="io.github.xbeeant.batiskit.git.link.CopyCommitLinkAction"
+                    text="复制当前行提交链接" icon="AllIcons.Actions.Copy"
+                    description="复制光标所在行最后一次提交的远程链接"/>
+            <action id="BatisKit.OpenCommitLink"
+                    class="io.github.xbeeant.batiskit.git.link.OpenCommitLinkAction"
+                    text="打开当前行提交" icon="AllIcons.Actions.Execute"
+                    description="在浏览器打开光标所在行最后一次提交"/>
+            <action id="BatisKit.OpenPullRequest"
+                    class="io.github.xbeeant.batiskit.git.link.OpenPullRequestAction"
+                    text="用当前分支创建 Pull Request" icon="AllIcons.Actions.Execute"
+                    description="在浏览器打开创建 PR / MR 页面"/>
+        </group>
+
+        <!-- Grep Console：Run / Debug 控制台右键的快捷菜单（设置 / 过滤开关 / 统计） -->
+        <group id="BatisKit.GrepConsoleMenu"
+               class="io.github.xbeeant.batiskit.console.GrepConsoleMenuGroup"
+               text="Grep Console" icon="AllIcons.Actions.Search"
+               description="日志着色与过滤的快捷入口"
+               popup="true">
+            <add-to-group group-id="ConsoleEditorPopupMenu" anchor="last"/>
+        </group>
+
+        <!-- Grep Console：选中内容后开启「Grep 过滤控制台」子 tab（对标原版 OpenGrepConsoleAction）。
+             菜单入口由 GrepConsoleMenuGroup 动态添加，这里只注册 id（快捷键用） -->
+        <action id="BatisKit.GrepConsoleOpenTab"
+                class="io.github.xbeeant.batiskit.console.grep.OpenGrepTabAction"
+                text="Grep（过滤控制台）" icon="AllIcons.Actions.Search"
+                description="以选中文本为表达式，在 Run / Debug 页面开启一个只显示命中行日志的子控制台">
+            <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta alt shift G"/>
+            <keyboard-shortcut keymap="$default" first-keystroke="control alt shift G"/>
+        </action>
+
+        <group id="BatisKit.GitToolboxGroup"
+               text="Git Toolbox（Batis Kit）" icon="AllIcons.General.Settings"
+               description="最近分支切换 / 推送 tag / 分支清理 / issue 链接"
+               popup="true">
+            <action id="BatisKit.SwitchRecentBranches"
+                    class="io.github.xbeeant.batiskit.git.actions.SwitchRecentBranchesAction"
+                    text="切换最近使用的分支" icon="AllIcons.Actions.Refresh"
+                    description="弹窗列出最近使用的本地分支并切换"/>
+            <action id="BatisKit.PushTags"
+                    class="io.github.xbeeant.batiskit.git.actions.PushTagsAction"
+                    text="推送选定 tag" icon="AllIcons.Actions.Execute"
+                    description="选择当前分支上的 tag 推送到远端（支持 --force）"/>
+            <action id="BatisKit.CleanupBranches"
+                    class="io.github.xbeeant.batiskit.git.actions.CleanupBranchesAction"
+                    text="清理分支" icon="AllIcons.Actions.Edit"
+                    description="列出已合并 / 陈旧的本地分支并删除"/>
+            <action id="BatisKit.OpenIssueLink"
+                    class="io.github.xbeeant.batiskit.git.actions.OpenIssueLinkAction"
+                    text="打开 Issue 链接" icon="AllIcons.Actions.Execute"
+                    description="按 Issue Navigation 配置打开当前行 / 当前分支引用的 issue"/>
+        </group>
+        <!-- 统一右键入口：编辑器 / 项目视图里所有 Batis Kit 动作收进一个子菜单。
+             被 reference 的 action / group 已删掉各自的 add-to-group，避免两处重复出现。
+             DatabaseViewPopupMenu（生成代码 / 比对）与 ConsoleEditorPopupMenu（Grep Console）
+             都是单一场景专用入口、且前者有相对顺序依赖，保持原位不动。
+             放在最后声明，保证引用的 id 都已注册。 -->
+        <group id="BatisKit.RootGroup"
+               class="io.github.xbeeant.batiskit.action.BatisKitActionGroup"
+               text="Batis Kit"
+               icon="AllIcons.General.Settings"
+               description="代码生成 / Mapper / 日志 / 字符串处理 / Git 相关快捷入口"
+               popup="true">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+
+            <reference ref="BatisKit.JsonToPojo"/>
+            <reference ref="BatisKit.FormatMapperXml"/>
+            <reference ref="BatisKit.RestoreMyBatisSql"/>
+            <reference ref="BatisKit.ToggleRainbowBrackets"/>
+            <reference ref="BatisKit.HighlightBracketScope"/>
+            <reference ref="BatisKit.ClearBracketScope"/>
+            <reference ref="BatisKit.GenerateAllSetter"/>
+            <reference ref="BatisKit.TemplateWorkbench"/>
+            <reference ref="BatisKit.SequenceDiagram"/>
+            <separator/>
+            <reference ref="BatisKit.StringManipulationChooser"/>
+            <reference ref="BatisKit.StringManipulation"/>
+            <separator/>
+            <reference ref="BatisKit.GitLinkGroup"/>
+            <reference ref="BatisKit.GitToolboxGroup"/>
+        </group>
+    </actions>
+</idea-plugin>

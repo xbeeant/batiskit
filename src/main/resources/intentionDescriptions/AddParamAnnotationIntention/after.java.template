@@ -1,0 +1,3 @@
+public interface UserMapper {
+    User selectById(@Param("id") Long id);
+}

@@ -1,0 +1,3 @@
+public interface UserMapper {
+    User selectById(<spot>Long id</spot>);
+}

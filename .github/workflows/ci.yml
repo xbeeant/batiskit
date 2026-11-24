@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Gradle 9 / IntelliJ Platform Gradle Plugin 2.x 需要 JDK 21 启动守护进程；
+      # 插件字节码目标为 JDK 17（2024.1 跑 JBR 17），该 toolchain 由
+      # settings.gradle.kts 里的 foojay-resolver-convention 自动解析，无需另装。
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: corretto
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # 先校验构建配置（sinceBuild / untilBuild、依赖声明），再跑测试与打包。
+      # LF 行尾由 .gitattributes 保证；gradlew 的可执行位记录在 git 索引里（100755），
+      # checkout 后不需要也不应该再 chmod，否则会把「新克隆即可构建」的问题掩盖掉。
+      - name: Validate plugin project configuration
+        run: ./gradlew verifyPluginProjectConfiguration
+
+      - name: Run tests
+        run: ./gradlew test
+
+      - name: Build plugin archive
+        run: ./gradlew buildPlugin
+
+      - name: Validate plugin.xml and archive structure
+        run: ./gradlew verifyPluginStructure
+
+      - name: Upload plugin archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: batiskit-plugin
+          path: build/distributions/*.zip
+          if-no-files-found: warn
+
+  # 兼容性验证（Plugin Verifier）：build.gradle.kts 已把验证 IDE 收窄到
+  # 2024.1（下限）与 2025.3 两端，不用默认的 recommended()（那会拉取
+  # since-build 之后的所有 IDE）。每个 IDE 仍是 1GB+ 的下载，因此只在
+  # push / 手动触发时跑，PR 跳过；failureLevel 只拦真正的兼容性问题。
+  compatibility:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: corretto, java-version: '21' }
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify IDE compatibility
+        run: ./gradlew verifyPlugin
+
+  # 打 v* tag 时签名并发布到 JetBrains Marketplace；凭据全部来自仓库 secret。
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [verify]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: corretto, java-version: '21' }
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Sign and publish plugin
+        env:
+          CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+        run: ./gradlew signPlugin publishPlugin

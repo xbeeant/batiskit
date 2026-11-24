@@ -1,0 +1,14 @@
+<html>
+<body>
+<p>在 Mapper XML 中生成与该方法对应的语句骨架（<b>select / insert / update / delete</b>，按方法名推断；select 自动带 resultType，List 返回值取泛型实参）。</p>
+<p>接口还没有绑定的 XML 文件时，按生成器的路径规则（资源根 / mybatis / 方言 / 库名 / 类名.xml）自动创建带 namespace 的空骨架。</p>
+<p>生成效果示例：</p>
+<pre>
+&lt;mapper namespace="com.example.mapper.UserMapper"&gt;
+    &lt;insert id="insert"&gt;
+        &lt;!-- TODO: 补充 SQL --&gt;
+    &lt;/insert&gt;
+&lt;/mapper&gt;
+</pre>
+</body>
+</html>
