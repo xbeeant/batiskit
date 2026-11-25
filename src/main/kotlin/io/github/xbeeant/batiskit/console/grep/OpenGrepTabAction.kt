@@ -90,8 +90,7 @@ class OpenGrepTabAction :
             console = console,
             initialExpression = expression,
             replayFn = {
-                listener.clear()
-                GrepReplay.grepThroughExistingText(parent, listener)
+                GrepReplay.grepThroughExistingText(project, parent, listener, console)
             },
         )
         listener.onMatchCountChanged = { count -> panel.setMatchCount(count) }
@@ -152,8 +151,8 @@ class OpenGrepTabAction :
             }, parent)
         }
 
-        // 与原版顺序一致：先回放已有文本，再挂上实时转发（避免新输出重复）
-        GrepReplay.grepThroughExistingText(parent, listener)
+        // 回放先占位并缓存实时输出，随后挂上转发：回放结束会把期间的新行按序补印
+        GrepReplay.grepThroughExistingText(project, parent, listener, console)
         grepFilter.addListener(listener)
 
         // 生命周期：tab 关闭 → 子控制台销毁、监听器从过滤器摘除

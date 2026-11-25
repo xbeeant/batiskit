@@ -1,14 +1,12 @@
 package io.github.xbeeant.batiskit.navigation
 
-import com.intellij.ide.highlighter.XmlFileType
+import com.intellij.openapi.components.service
 import com.intellij.openapi.module.ModuleUtilCore
+import com.intellij.psi.JavaPsiFacade
 import com.intellij.psi.PsiClass
 import com.intellij.psi.PsiElement
-import com.intellij.psi.PsiManager
 import com.intellij.psi.PsiMethod
-import com.intellij.psi.search.FileTypeIndex
 import com.intellij.psi.search.GlobalSearchScope
-import com.intellij.psi.JavaPsiFacade
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.psi.xml.XmlFile
 import com.intellij.psi.xml.XmlTag
@@ -22,6 +20,9 @@ import com.intellij.psi.xml.XmlText
  *  - 反向：namespace → 接口、(namespace, id) → 方法。
  *
  * 参考开源实现（MybatisX / free-idea-mybatis）的解析规则。
+ *
+ * 所有跨文件查询都走 [MapperXmlIndexCache]：一次 pass 只扫一遍 XML，
+ * 后续同作用域的查询复用索引，不再按方法 / 标签重复枚举 FileTypeIndex。
  */
 object MapperXmlResolver {
 
@@ -39,16 +40,9 @@ object MapperXmlResolver {
 
     /** 模块范围内按 namespace 找 Mapper XML 文件（可能有多个） */
     fun xmlFilesByNamespace(anchor: PsiElement, namespace: String): List<XmlFile> {
-        if (namespace.isBlank()) return emptyList()
-        val manager = PsiManager.getInstance(anchor.project)
-        return FileTypeIndex.getFiles(XmlFileType.INSTANCE, scopeOf(anchor))
-            .asSequence()
-            .mapNotNull { manager.findFile(it) as? XmlFile }
-            .filter { file ->
-                val root = file.rootTag
-                root?.name == "mapper" && root.getAttributeValue("namespace") == namespace
-            }
-            .toList()
+        val ns = namespace.trim()
+        if (ns.isEmpty()) return emptyList()
+        return indexOf(anchor).filesByNamespace[ns].orEmpty()
     }
 
     /**
@@ -63,7 +57,7 @@ object MapperXmlResolver {
      */
     private fun sameNamespaceFiles(anchor: XmlTag): List<XmlFile> {
         val file = anchor.containingFile as? XmlFile ?: return emptyList()
-        val namespace = file.rootTag?.getAttributeValue("namespace").orEmpty()
+        val namespace = file.rootTag?.getAttributeValue("namespace")?.trim().orEmpty()
         val result = LinkedHashMap<String, XmlFile>()
         fun keyOf(f: XmlFile) = f.virtualFile?.path ?: f.name
         result[keyOf(file)] = file
@@ -89,24 +83,49 @@ object MapperXmlResolver {
     fun resultMapDefinitions(tag: XmlTag, reference: String): List<XmlTag> {
         val ref = reference.trim()
         if (ref.isBlank()) return emptyList()
+        val index = indexOf(tag)
         if (ref.contains('.')) {
             val namespace = ref.substringBeforeLast('.')
             val id = ref.substringAfterLast('.')
             if (id.isNotBlank()) {
-                val defs = xmlFilesByNamespace(tag, namespace).flatMap { resultMapsIn(it, id) }
+                val defs = definitionsIn(index, tag, "resultMap", namespace, id)
                 if (defs.isNotEmpty()) {
                     return defs
                 }
             }
         }
         val shortId = ref.substringAfterLast('.')
-        return sameNamespaceFiles(tag).flatMap { resultMapsIn(it, shortId) }
+        val ownNamespace = (tag.containingFile as? XmlFile)?.rootTag?.getAttributeValue("namespace").orEmpty()
+        return definitionsIn(index, tag, "resultMap", ownNamespace, shortId)
     }
 
-    /** 当前文件里 id 匹配的 `<resultMap>` 定义（定义始终是 mapper 的直接子标签） */
-    private fun resultMapsIn(file: XmlFile, id: String): List<XmlTag> =
-        file.rootTag?.subTags?.filter { it.name == "resultMap" && it.getAttributeValue("id") == id }
-            ?: emptyList()
+    /**
+     * 从索引取定义，并补上当前未进索引的内存文件（与 [sameNamespaceFiles] 的兜底一致）。
+     */
+    private fun definitionsIn(
+        index: MapperXmlIndex,
+        anchor: XmlTag,
+        tagName: String,
+        namespace: String,
+        id: String,
+    ): List<XmlTag> {
+        val out = LinkedHashSet<XmlTag>()
+        val root = (anchor.containingFile as? XmlFile)?.rootTag
+        if (root?.name == "mapper" &&
+            root.getAttributeValue("namespace")?.trim().orEmpty() == namespace.trim()
+        ) {
+            root.subTags.filterTo(out) {
+                it.name == tagName && it.getAttributeValue("id")?.trim() == id
+            }
+        }
+        val fromIndex = when (tagName) {
+            "resultMap" -> index.resultMaps
+            "sql" -> index.sqlFragments
+            else -> emptyMap()
+        }[mapperKey(namespace.trim(), id)]
+        if (fromIndex != null) out.addAll(fromIndex)
+        return out.toList()
+    }
 
     /**
      * `<resultMap>` 定义的所有引用处：语句标签的 `resultMap` 属性、其他 resultMap 的 `extends`、
@@ -118,28 +137,11 @@ object MapperXmlResolver {
         if (id.isBlank()) return emptyList()
         val file = definition.containingFile as? XmlFile ?: return emptyList()
         val namespace = file.rootTag?.getAttributeValue("namespace").orEmpty()
-        val manager = PsiManager.getInstance(definition.project)
         val usages = ArrayList<XmlTag>()
-        for (mapperFile in FileTypeIndex.getFiles(XmlFileType.INSTANCE, scopeOf(definition))) {
-            val f = manager.findFile(mapperFile) as? XmlFile ?: continue
-            val root = f.rootTag ?: continue
-            if (root.name != "mapper") {
-                continue
-            }
-            val ns = root.getAttributeValue("namespace").orEmpty()
-            walkTags(root) { tag ->
-                if (tag === definition) {
-                    return@walkTags
-                }
-                val references = when (tag.name) {
-                    in STATEMENT_TAGS -> referencesId(tag.getAttributeValue("resultMap"), ns, id, namespace)
-                    "resultMap" -> referencesId(tag.getAttributeValue("extends"), ns, id, namespace)
-                    "association", "collection" -> referencesId(tag.getAttributeValue("resultMap"), ns, id, namespace)
-                    else -> false
-                }
-                if (references) {
-                    usages += tag
-                }
+        for (reference in indexOf(definition).resultMapReferences) {
+            if (reference.tag === definition) continue
+            if (referencesId(reference.raw, reference.namespace, id, namespace)) {
+                usages += reference.tag
             }
         }
         return usages
@@ -159,13 +161,6 @@ object MapperXmlResolver {
         return value == "$ownNamespace.$id" || (tagNamespace.isNotBlank() && value == "$tagNamespace.$id")
     }
 
-    private fun walkTags(tag: XmlTag, action: (XmlTag) -> Unit) {
-        action(tag)
-        for (sub in tag.subTags) {
-            walkTags(sub, action)
-        }
-    }
-
     // ------------------------------------------------------------------ <sql> 片段 / <include refid>
 
     /**
@@ -176,21 +171,19 @@ object MapperXmlResolver {
     fun sqlDefinitions(tag: XmlTag, reference: String): List<XmlTag> {
         val ref = reference.trim()
         if (ref.isBlank()) return emptyList()
+        val index = indexOf(tag)
         if (ref.contains('.')) {
             val namespace = ref.substringBeforeLast('.')
             val id = ref.substringAfterLast('.')
             if (id.isNotBlank()) {
-                val defs = xmlFilesByNamespace(tag, namespace).flatMap { sqlFragmentsIn(it, id) }
+                val defs = definitionsIn(index, tag, "sql", namespace, id)
                 if (defs.isNotEmpty()) return defs
             }
         }
         val shortId = ref.substringAfterLast('.')
-        return sameNamespaceFiles(tag).flatMap { sqlFragmentsIn(it, shortId) }
+        val ownNamespace = (tag.containingFile as? XmlFile)?.rootTag?.getAttributeValue("namespace").orEmpty()
+        return definitionsIn(index, tag, "sql", ownNamespace, shortId)
     }
-
-    private fun sqlFragmentsIn(file: XmlFile, id: String): List<XmlTag> =
-        file.rootTag?.subTags?.filter { it.name == "sql" && it.getAttributeValue("id") == id }
-            ?: emptyList()
 
     /** `<sql>` 定义的全部 `<include refid>` 引用处（同 namespace 用短名，跨文件写全限定名） */
     fun sqlUsages(definition: XmlTag): List<XmlTag> {
@@ -198,17 +191,10 @@ object MapperXmlResolver {
         if (id.isBlank()) return emptyList()
         val file = definition.containingFile as? XmlFile ?: return emptyList()
         val namespace = file.rootTag?.getAttributeValue("namespace").orEmpty()
-        val manager = PsiManager.getInstance(definition.project)
         val usages = ArrayList<XmlTag>()
-        for (mapperFile in FileTypeIndex.getFiles(XmlFileType.INSTANCE, scopeOf(definition))) {
-            val f = manager.findFile(mapperFile) as? XmlFile ?: continue
-            val root = f.rootTag ?: continue
-            if (root.name != "mapper") continue
-            val ns = root.getAttributeValue("namespace").orEmpty()
-            walkTags(root) { child ->
-                if (child.name == "include" && referencesId(child.getAttributeValue("refid"), ns, id, namespace)) {
-                    usages += child
-                }
+        for (reference in indexOf(definition).sqlReferences) {
+            if (referencesId(reference.raw, reference.namespace, id, namespace)) {
+                usages += reference.tag
             }
         }
         return usages
@@ -225,24 +211,20 @@ object MapperXmlResolver {
     private fun idVariants(anchor: XmlTag, tagName: String): List<String> {
         val file = anchor.containingFile as? XmlFile ?: return emptyList()
         val root = file.rootTag ?: return emptyList()
-        val ownNamespace = root.getAttributeValue("namespace").orEmpty()
+        val ownNamespace = root.getAttributeValue("namespace")?.trim().orEmpty()
         val own = root.subTags.mapNotNull { tag ->
             tag.takeIf { it.name == tagName }?.getAttributeValue("id")?.trim()?.takeIf(String::isNotEmpty)
         }
-        val manager = PsiManager.getInstance(anchor.project)
+        val index = indexOf(anchor)
         val others = mutableListOf<String>()
-        for (vf in FileTypeIndex.getFiles(XmlFileType.INSTANCE, scopeOf(anchor)).take(MAX_VARIANT_FILES)) {
-            if (vf == file.virtualFile) continue
-            val other = manager.findFile(vf) as? XmlFile ?: continue
-            val otherRoot = other.rootTag ?: continue
-            if (otherRoot.name != "mapper") continue
-            val ns = otherRoot.getAttributeValue("namespace").orEmpty()
-            if (ns.isBlank()) continue
-            val prefix = if (ns == ownNamespace) "" else "$ns."
-            otherRoot.subTags.forEach { tag ->
-                if (tag.name == tagName) {
-                    val id = tag.getAttributeValue("id")?.trim().orEmpty()
-                    if (id.isNotEmpty()) others += "$prefix$id"
+        var visited = 0
+        outer@ for ((namespace, files) in index.filesByNamespace) {
+            for (other in files) {
+                if (visited++ >= MAX_VARIANT_FILES) break@outer
+                if (other === file || (file.virtualFile != null && other.virtualFile == file.virtualFile)) continue
+                val prefix = if (namespace == ownNamespace) "" else "$namespace."
+                index.idsByNamespaceAndTag[idsKey(namespace, tagName)]?.forEach { id ->
+                    others += "$prefix$id"
                 }
             }
         }
@@ -258,33 +240,20 @@ object MapperXmlResolver {
     /** `id` 补全候选：接口里还没有对应 XML 语句的方法名（比笼统列全部方法更贴近真实用法） */
     fun statementIdVariants(anchor: XmlTag): List<String> {
         val clazz = interfaceOf(anchor) ?: return emptyList()
-        val existing = xmlFiles(clazz).flatMap { file ->
-            file.rootTag?.subTags
-                ?.filter { isStatementTag(it) }
-                ?.mapNotNull { it.getAttributeValue("id")?.trim() }
-                .orEmpty()
-        }.toSet()
+        val namespace = clazz.qualifiedName ?: return emptyList()
+        val index = indexOf(anchor)
+        val existing = STATEMENT_TAGS
+            .flatMap { index.idsByNamespaceAndTag[idsKey(namespace, it)].orEmpty() }
+            .toSet()
         return clazz.methods
-            .mapNotNull { it.name?.trim()?.takeIf(String::isNotEmpty) }
+            .mapNotNull { it.name.trim().takeIf(String::isNotEmpty) }
             .filterNot { it in existing }
             .distinct()
     }
 
     /** `namespace` 补全候选：工程内已有 Mapper XML 的 namespace 去重集合 */
-    fun namespaceVariants(anchor: PsiElement): List<String> {
-        val manager = PsiManager.getInstance(anchor.project)
-        return FileTypeIndex.getFiles(XmlFileType.INSTANCE, scopeOf(anchor))
-            .take(MAX_VARIANT_FILES)
-            .mapNotNull { manager.findFile(it) as? XmlFile }
-            .mapNotNull { file ->
-                file.rootTag
-                    ?.takeIf { it.name == "mapper" }
-                    ?.getAttributeValue("namespace")?.trim()
-                    ?.takeIf(String::isNotEmpty)
-            }
-            .distinct()
-            .toList()
-    }
+    fun namespaceVariants(anchor: PsiElement): List<String> =
+        indexOf(anchor).filesByNamespace.keys.take(MAX_VARIANT_FILES).toList()
 
     private const val MAX_VARIANT_FILES = 200
 
@@ -293,12 +262,8 @@ object MapperXmlResolver {
 
     /** mapper 方法对应的 XML 语句片段（同名 id 可能出现多个） */
     fun statements(method: PsiMethod): List<XmlTag> {
-        val clazz = method.containingClass ?: return emptyList()
-        return xmlFiles(clazz).flatMap { file ->
-            file.rootTag?.subTags
-                ?.filter { it.name in STATEMENT_TAGS && it.getAttributeValue("id") == method.name }
-                ?: emptyList()
-        }
+        val fqn = method.containingClass?.qualifiedName ?: return emptyList()
+        return indexOf(method).statements[mapperKey(fqn, method.name)].orEmpty()
     }
 
     /** XML 语句片段对应的 mapper 方法（namespace + id 反查） */
@@ -358,6 +323,19 @@ object MapperXmlResolver {
         }
         return JavaPsiFacade.getInstance(tag.project).findClass(namespace, scopeOf(tag))
     }
+
+    /** 让一次 collectSlowLineMarkers pass 只建立一份索引，其余查询直接复用 */
+    internal fun prepareIndex(anchor: PsiElement) {
+        indexOf(anchor)
+    }
+
+    private fun indexOf(element: PsiElement): MapperXmlIndex {
+        val project = element.project
+        return project.service<MapperXmlIndexCache>().index(scopeKeyOf(element), scopeOf(element))
+    }
+
+    private fun scopeKeyOf(element: PsiElement): String =
+        ModuleUtilCore.findModuleForPsiElement(element)?.moduleFilePath ?: "project:${element.project.name}"
 
     private fun scopeOf(element: PsiElement): GlobalSearchScope {
         val module = ModuleUtilCore.findModuleForPsiElement(element)

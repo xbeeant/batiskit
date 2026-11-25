@@ -37,7 +37,7 @@ class RainbowSettings : PersistentStateComponent<RainbowSettings.State> {
         var excludeLanguages: String = ""
 
         /** 超过这个大小的文件整体跳过，避免大文件每次重算层级；单位 KB */
-        var maxFileSizeKb: Int = 1024
+        var maxFileSizeKb: Int = 256
 
         /** 颜色生成器上次选择的色相 / 亮度，重开设置页时带回 */
         var paletteHue: String = RainbowPalette.Hue.BLUE.name

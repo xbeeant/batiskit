@@ -15,6 +15,8 @@ import javax.swing.table.TableModel
  */
 object SearchQuery {
 
+    private val WHITESPACE = Regex("\\s+")
+
     data class Query(
         val include: List<String> = emptyList(),
         val exclude: List<String> = emptyList(),
@@ -27,7 +29,7 @@ object SearchQuery {
         val include = mutableListOf<String>()
         val exclude = mutableListOf<String>()
         val regexes = mutableListOf<Regex>()
-        text.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.forEach { term ->
+        text.trim().split(WHITESPACE).filter { it.isNotEmpty() }.forEach { term ->
             when {
                 term.length >= 3 && term.startsWith('/') && term.endsWith('/') -> {
                     val pattern = term.substring(1, term.length - 1)

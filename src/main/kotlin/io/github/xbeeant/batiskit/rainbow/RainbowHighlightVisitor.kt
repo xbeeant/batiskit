@@ -41,10 +41,10 @@ class RainbowHighlightVisitor : HighlightVisitor, DumbAware {
     ): Boolean {
         val settings = RainbowSettings.getInstance().state
         val count = RainbowSettings.colorCount()
-        val combined = HashMap<Int, Int>()
-
-        // 1) 通用的 () [] {}：只收单字符的 PSI 叶子，字符串 / 注释整段是一个叶子，天然不会被算进去
-        combined.putAll(BraceLevels.compute(BraceScanner.collect(file), count))
+        // 1) 通用的 () [] {}：复用按文件 + 修改戳缓存的分析，文件未变时不重复扫整棵 PSI
+        val braceAnalysis = BraceAnalysisCache.analysis(file, count)
+        val combined = HashMap<Int, Int>(braceAnalysis.colors.size)
+        combined.putAll(braceAnalysis.colors)
 
         // 2) XML 标签尖括号：不能按 "<"…">" 配对（同一行就闭合了，嵌套标签会全落第 0 层），
         //    改按 XmlTag 的父子层级算，开闭标签的四个尖括号同色

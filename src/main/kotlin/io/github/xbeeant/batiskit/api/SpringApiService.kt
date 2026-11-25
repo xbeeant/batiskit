@@ -1,15 +1,18 @@
 package io.github.xbeeant.batiskit.api
 
 import com.intellij.openapi.Disposable
-import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.module.ModuleUtilCore
+import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.progress.ProgressIndicatorProvider
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.IndexNotReadyException
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.psi.JavaPsiFacade
 import com.intellij.psi.PsiAnnotation
 import com.intellij.psi.PsiAnnotationMemberValue
@@ -18,6 +21,7 @@ import com.intellij.psi.PsiClass
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiExpression
 import com.intellij.psi.PsiField
+import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
 import com.intellij.psi.PsiMethod
 import com.intellij.psi.PsiTreeChangeAdapter
@@ -27,8 +31,12 @@ import com.intellij.psi.SmartPointerManager
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.searches.AnnotatedElementsSearch
 import com.intellij.util.Alarm
+import com.intellij.util.concurrency.AppExecutorUtil
+import org.jetbrains.concurrency.CancellablePromise
+import java.util.concurrent.Callable
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.Future
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 全工程的 Spring / Dubbo 接口索引（Tool Window 的数据源）。
@@ -46,20 +54,34 @@ class SpringApiService(private val project: Project) : Disposable {
     @Volatile
     private var cache: List<Record> = emptyList()
 
-    private var scanning: Future<*>? = null
+    private var scanning: CancellablePromise<List<Record>?>? = null
+
+    /** 每次启动扫描都递增；旧任务即使没被及时取消，也不能把过期结果写回缓存 */
+    private val scanGeneration = AtomicInteger()
 
     private val listeners = CopyOnWriteArrayList<(List<Record>) -> Unit>()
 
     /** PSI 变化很多，合并成一次重扫；延迟避开正在批量构建索引的阶段 */
     private val invalidationAlarm = Alarm(Alarm.ThreadToUse.POOLED_THREAD, this)
 
+    /** 只记录改动过的源文件路径；后台据此判断这次编辑是否碰过接口注解 */
+    private val dirtyPaths = ConcurrentHashMap.newKeySet<String>()
+    private val annotationByPath = ConcurrentHashMap<String, Boolean>()
+
     init {
         // 改了 @GetMapping / 新增 Controller 后列表会自动刷新，不必手动点「重新加载」。
         // 只监听 Java / Kotlin 源码，防抖后重扫；回调里只做调度，不做 PSI 访问。
         PsiManager.getInstance(project).addPsiTreeChangeListener(object : PsiTreeChangeAdapter() {
             override fun childrenChanged(event: PsiTreeChangeEvent) {
-                val name = event.file?.name.orEmpty()
-                if (name.endsWith(".java", true) || name.endsWith(".kt", true)) invalidate()
+                val file: PsiFile = event.file
+                    ?: event.newChild?.containingFile
+                    ?: event.child?.containingFile
+                    ?: return
+                val name = file.name
+                if (!name.endsWith(".java", true) && !name.endsWith(".kt", true)) return
+                val path = file.virtualFile?.path ?: return
+                dirtyPaths.add(path)
+                invalidate()
             }
         }, this)
     }
@@ -84,50 +106,95 @@ class SpringApiService(private val project: Project) : Disposable {
 
     private fun refreshAll() {
         if (project.isDisposed) return
-        refresh { records -> listeners.forEach { listener -> runCatching { listener(records) } } }
+        val changed = dirtyPaths.toList().toSet()
+        dirtyPaths.clear()
+        refresh({ records -> listeners.forEach { listener -> runCatching { listener(records) } } }, changed)
+    }
+
+    /** 手动重新加载：无视「注解相关性」判断，全量重扫 */
+    fun refresh(onReady: (List<Record>) -> Unit) {
+        dirtyPaths.clear()
+        refresh(onReady, emptySet())
     }
 
     /**
      * 后台重新扫描；[onReady] 在 EDT 回调（可能拿到空列表）。
-     * 索引未就绪时推迟到 smart mode 再扫，避免拿到半截结果。
+     *
+     * 用非阻塞读动作替代长 [ReadAction]：前者会把读锁切给写操作，避免大工程里按住 IDE；
+     * [changedPaths] 非空时先做一次轻量的注解相关性判断，普通业务代码改动不再触发全工程扫描。
      */
-    fun refresh(onReady: (List<Record>) -> Unit) {
+    private fun refresh(onReady: (List<Record>) -> Unit, changedPaths: Set<String>) {
         val dumbService = DumbService.getInstance(project)
         if (dumbService.isDumb) {
             dumbService.smartInvokeLater {
                 if (!project.isDisposed) {
-                    refresh(onReady)
+                    refresh(onReady, changedPaths)
                 }
             }
             return
         }
-        scanning?.cancel(false)
-        scanning = ApplicationManager.getApplication().executeOnPooledThread {
-            val result = try {
-                ReadAction.compute<List<Record>, Throwable> { scanProject() }
+
+        val generation = scanGeneration.incrementAndGet()
+        scanning?.cancel()
+        scanning = ReadAction.nonBlocking(Callable<List<Record>?> {
+            try {
+                if (changedPaths.isNotEmpty() && !hasRelevantChange(changedPaths)) {
+                    null
+                } else {
+                    scanProject()
+                }
             } catch (e: IndexNotReadyException) {
                 // 索引正在重建：晚点重来，别把空结果写进缓存
                 dumbService.smartInvokeLater {
-                    if (!project.isDisposed) {
-                        refresh(onReady)
-                    }
+                    if (!project.isDisposed) refresh(onReady, changedPaths)
                 }
-                return@executeOnPooledThread
+                null
+            } catch (e: ProcessCanceledException) {
+                // 取消是正常流程，别记成扫描失败
+                throw e
             } catch (e: Throwable) {
                 LOG.warn("Spring API 扫描失败", e)
                 emptyList()
             }
-            cache = result
-            ApplicationManager.getApplication().invokeLater {
-                if (!project.isDisposed) {
-                    onReady(result)
-                }
+        })
+            .inSmartMode(project)
+            .expireWith(this)
+            .finishOnUiThread(ModalityState.defaultModalityState()) { result ->
+                if (generation != scanGeneration.get() || result == null || project.isDisposed) return@finishOnUiThread
+                cache = result
+                onReady(result)
+            }
+            .submit(AppExecutorUtil.getAppExecutorService())
+    }
+
+    /**
+     * 判断这批文件里是否有改动前后与接口注解相关的文件。
+     * 同一文件里继续编辑注解或路径仍然要重扫；首次看到的文件按「相关」处理，避免漏掉新增接口。
+     */
+    private fun hasRelevantChange(paths: Set<String>): Boolean {
+        val manager = PsiManager.getInstance(project)
+        var relevant = false
+        for (path in paths) {
+            val virtualFile = LocalFileSystem.getInstance().findFileByPath(path)
+            val file = virtualFile?.let { manager.findFile(it) }
+            val nowAnnotated = if (file == null) {
+                // 文件被删除 / 不在当前 VFS 里：保守起见重扫一次
+                true
+            } else {
+                val text = file.text
+                ANNOTATION_TOKENS.any { text.contains(it) }
+            }
+            val before = annotationByPath.put(path, nowAnnotated)
+            if (before == null || before != nowAnnotated || nowAnnotated) {
+                relevant = true
             }
         }
+        return relevant
     }
 
     override fun dispose() {
-        scanning?.cancel(false)
+        scanGeneration.incrementAndGet()
+        scanning?.cancel()
         scanning = null
         invalidationAlarm.cancelAllRequests()
         listeners.clear()
@@ -154,13 +221,18 @@ class SpringApiService(private val project: Project) : Disposable {
         val facade = JavaPsiFacade.getInstance(project)
         val pointers = SmartPointerManager.getInstance(project)
         val out = mutableListOf<Record>()
+        // 非阻塞读动作会周期性让出读锁；这里显式检查取消，用户快速改选项时能及时停下
+        fun checkCanceled() = ProgressIndicatorProvider.checkCanceled()
+        checkCanceled()
 
         val controllers = LinkedHashSet<PsiClass>()
         SpringMappings.CLASS_ANNOTATIONS.forEach { fqn ->
+            checkCanceled()
             val annotation = facade.findClass(fqn, resolveScope) ?: return@forEach
             controllers += AnnotatedElementsSearch.searchPsiClasses(annotation, searchScope).findAll()
         }
         controllers.forEach { controller ->
+            checkCanceled()
             val basePaths = classPathPrefixes(controller)
             annotatedMethods(controller).forEach { method ->
                 endpointsOf(controller, method, basePaths).forEach { endpoint ->
@@ -169,6 +241,7 @@ class SpringApiService(private val project: Project) : Disposable {
             }
         }
 
+        checkCanceled()
         val scheduled = facade.findClass(SpringMappings.SCHEDULED, resolveScope)
         if (scheduled != null) {
             AnnotatedElementsSearch.searchPsiMethods(scheduled, searchScope).findAll().forEach { method ->
@@ -180,6 +253,7 @@ class SpringApiService(private val project: Project) : Disposable {
 
         // Dubbo 提供者：@DubboService 实现类里的每个公开方法
         DubboMappings.SERVICE_ANNOTATIONS.forEach { fqn ->
+            checkCanceled()
             val annotation = facade.findClass(fqn, resolveScope) ?: return@forEach
             AnnotatedElementsSearch.searchPsiClasses(annotation, searchScope).findAll().forEach { psiClass ->
                 dubboServiceEndpoints(psiClass).forEach { (endpoint, method) ->
@@ -190,6 +264,7 @@ class SpringApiService(private val project: Project) : Disposable {
 
         // Dubbo 消费者：@DubboReference 字段（注入的远程服务引用）
         DubboMappings.REFERENCE_ANNOTATIONS.forEach { fqn ->
+            checkCanceled()
             val annotation = facade.findClass(fqn, resolveScope) ?: return@forEach
             AnnotatedElementsSearch.searchPsiFields(annotation, searchScope).findAll().forEach { field ->
                 dubboReferenceEndpoint(field)?.let { endpoint ->
@@ -375,6 +450,22 @@ class SpringApiService(private val project: Project) : Disposable {
         private val LOG = Logger.getInstance(SpringApiService::class.java)
 
         private const val REFRESH_DELAY_MS = 800L
+
+        /** 源文件改动前后的轻量相关性判断：只看文本里有没有这些注解名，不触碰索引 */
+        private val ANNOTATION_TOKENS: List<String> = buildList {
+            addAll(SpringMappings.CLASS_ANNOTATIONS)
+            addAll(SpringMappings.METHOD_ANNOTATIONS.keys)
+            add(SpringMappings.SCHEDULED)
+            addAll(DubboMappings.SERVICE_ANNOTATIONS)
+            addAll(DubboMappings.REFERENCE_ANNOTATIONS)
+            addAll(
+                listOf(
+                    "@RestController", "@Controller", "@RequestMapping", "@GetMapping",
+                    "@PostMapping", "@PutMapping", "@DeleteMapping", "@PatchMapping",
+                    "@Scheduled", "@DubboService", "@DubboReference", "@Reference", "@Service",
+                )
+            )
+        }
 
         fun getInstance(project: Project): SpringApiService = project.service<SpringApiService>()
     }

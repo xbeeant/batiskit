@@ -22,6 +22,7 @@ import com.intellij.psi.PsiElement
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.ui.CollectionListModel
 import com.intellij.ui.ColoredListCellRenderer
+import com.intellij.util.Alarm
 import com.intellij.ui.ScrollPaneFactory
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.awt.RelativePoint
@@ -35,6 +36,7 @@ import io.github.xbeeant.batiskit.ui.components.ContentSwitcher
 import io.github.xbeeant.batiskit.ui.components.FilterChipGroup
 import io.github.xbeeant.batiskit.ui.components.SearchField
 import io.github.xbeeant.batiskit.ui.components.StatusBarPanel
+import io.github.xbeeant.batiskit.console.FilterQuery
 import io.github.xbeeant.batiskit.console.GrepConsoleService
 import io.github.xbeeant.batiskit.console.LogEntry
 import io.github.xbeeant.batiskit.console.LogLevel
@@ -65,10 +67,10 @@ class GrepConsolePanel(private val project: Project) : Disposable {
     private val service = GrepConsoleService.getInstance(project)
     private val settings get() = service.settings
 
-    private val search = SearchField("搜索日志，空格分隔多个关键字（/…/ 用正则）", ::applyFilter)
+    private val search = SearchField("搜索日志，空格分隔多个关键字（/…/ 用正则）") { scheduleFilter(false) }
 
     /** 级别从「最低级别下拉」改为可多选 chip；DEBUG 组含 TRACE 与未识别级别 */
-    private val levelChips = FilterChipGroup(LEVEL_CHIPS, LEVEL_CHIPS) { applyFilter() }
+    private val levelChips = FilterChipGroup(LEVEL_CHIPS, LEVEL_CHIPS) { scheduleFilter(false) }
 
     private val sortBox = ComboBox(arrayOf("捕获顺序", "错误优先", "最新优先", "来源 A→Z"))
     private val errorOnlyBox = JBCheckBox("只看 ERROR")
@@ -85,18 +87,42 @@ class GrepConsolePanel(private val project: Project) : Disposable {
     private val all = mutableListOf<LogEntry>()
     private var visible: List<LogEntry> = emptyList()
 
+    /** 一批日志只排一次 EDT 刷新；高频输出时不做一批一次的全量过滤 + replaceAll */
+    private val refreshAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
+    private var refreshScrollToEnd = false
+    private var allVersion = 0
+    private var lastViewKey: String? = null
+
+    /** 级别计数随增删增量维护，不再每次刷新都对全量列表 count 六遍 */
+    private val levelCounts = mutableMapOf<LogLevel, Int>()
+
+    /** 搜索表达式按文本缓存，输入 / 刷新时避免重复构造 */
+    private var cachedFilterText: String? = null
+    private var cachedFilter: FilterQuery? = null
+
     private val listener = object : GrepConsoleService.Listener {
         override fun linesAdded(lines: List<LogEntry>) {
+            if (lines.isEmpty()) return
+            for (entry in lines) {
+                levelCounts[entry.level] = (levelCounts[entry.level] ?: 0) + 1
+            }
             all.addAll(lines)
             val limit = settings.maxEntries
-            while (all.size > limit) all.removeAt(0)
-            applyFilter(scrollToEnd = true)
+            while (all.size > limit) {
+                val removed = all.removeAt(0)
+                val left = (levelCounts[removed.level] ?: 1) - 1
+                if (left > 0) levelCounts[removed.level] = left else levelCounts.remove(removed.level)
+            }
+            allVersion++
+            scheduleFilter(scrollToEnd = true)
         }
 
         override fun refreshed() {
             all.clear()
             all.addAll(service.snapshot())
-            applyFilter()
+            rebuildCounts()
+            allVersion++
+            scheduleFilter(scrollToEnd = false)
         }
     }
 
@@ -106,7 +132,8 @@ class GrepConsolePanel(private val project: Project) : Disposable {
         pauseBox.isSelected = service.paused
         service.addListener(listener, this)
         all.addAll(service.snapshot())
-        applyFilter()
+        rebuildCounts()
+        applyFilter(force = true)
     }
 
     override fun dispose() {
@@ -126,16 +153,16 @@ class GrepConsolePanel(private val project: Project) : Disposable {
                 levelChips.setAll(false)
                 previousLevels.forEach { levelChips.setSelected(it, true) }
             }
-            applyFilter()
+            scheduleFilter(false)
         }
         pauseBox.toolTipText = "暂停后不再收集新的控制台输出（已捕获的不受影响）"
         pauseBox.addActionListener {
             service.paused = pauseBox.isSelected
             updateBanners()
-            applyFilter()
+            scheduleFilter(false)
         }
         sortBox.toolTipText = "列表排序方式；切换后当前过滤结果立即重排，捕获顺序下新行自动滚到底"
-        sortBox.addActionListener { applyFilter() }
+        sortBox.addActionListener { scheduleFilter(false) }
 
         list.selectionMode = ListSelectionModel.SINGLE_SELECTION
         list.cellRenderer = EntryRenderer()
@@ -191,7 +218,6 @@ class GrepConsolePanel(private val project: Project) : Disposable {
         shell.onClearFilters(::clearFilters)
 
         updateBanners()
-        applyFilter()
         return shell.component
     }
 
@@ -226,7 +252,7 @@ class GrepConsolePanel(private val project: Project) : Disposable {
                 pauseBox.isSelected = false
                 service.paused = false
                 updateBanners()
-                applyFilter()
+                scheduleFilter(false)
             }
 
             !settings.enabled || !settings.captureEnabled -> shell.showBanner(
@@ -258,9 +284,54 @@ class GrepConsolePanel(private val project: Project) : Disposable {
             else -> entries.sortedBy { it.seq }
         }
 
-    private fun applyFilter(scrollToEnd: Boolean = false) {
-        val query = search.text.trim()
-        val filter = if (query.isEmpty()) null else io.github.xbeeant.batiskit.console.FilterQuery(query)
+    private fun rebuildCounts() {
+        levelCounts.clear()
+        for (entry in all) {
+            levelCounts[entry.level] = (levelCounts[entry.level] ?: 0) + 1
+        }
+    }
+
+    /** 高频日志只保留最后一次刷新请求，避免 EDT 被一批批全量过滤占满 */
+    private fun scheduleFilter(scrollToEnd: Boolean) {
+        refreshScrollToEnd = refreshScrollToEnd || scrollToEnd
+        refreshAlarm.cancelAllRequests()
+        refreshAlarm.addRequest({
+            val scroll = refreshScrollToEnd
+            refreshScrollToEnd = false
+            applyFilter(scrollToEnd = scroll)
+        }, REFRESH_DELAY_MS)
+    }
+
+    /** 输入没变且列表没变时直接跳过，避免勾选框 / 初始化触发重复全量过滤 */
+    private fun viewKey(): String = listOf(
+        allVersion,
+        search.text,
+        levelChips.selected().sorted(),
+        sortBox.selectedIndex,
+        errorOnlyBox.isSelected,
+        service.paused,
+        settings.enabled,
+        settings.captureEnabled,
+    ).joinToString("\u0000")
+
+    private fun queryFor(text: String): FilterQuery? {
+        if (text.isEmpty()) return null
+        if (cachedFilterText != text) {
+            cachedFilterText = text
+            cachedFilter = FilterQuery(text)
+        }
+        return cachedFilter
+    }
+
+    private fun applyFilter(scrollToEnd: Boolean = false, force: Boolean = false) {
+        val key = viewKey()
+        if (!force && key == lastViewKey) {
+            if (scrollToEnd && visible.isNotEmpty()) list.ensureIndexIsVisible(visible.lastIndex)
+            return
+        }
+        lastViewKey = key
+
+        val filter = queryFor(search.text.trim())
         val enabled = levelChips.selected()
         val filtered = sortEntries(all.filter { entry ->
             levelVisible(entry.level, enabled) &&
@@ -277,7 +348,6 @@ class GrepConsolePanel(private val project: Project) : Disposable {
         }
         if (scrollToEnd && filtered.isNotEmpty()) list.ensureIndexIsVisible(filtered.lastIndex)
 
-        val counts = LogLevel.entries.associateWith { level -> all.count { it.level == level } }
         val captureOff = !settings.enabled || !settings.captureEnabled
         shell.setCount("共 ${all.size} 行")
         shell.setStatus(
@@ -287,8 +357,10 @@ class GrepConsolePanel(private val project: Project) : Disposable {
                 captureOff -> "捕获已关闭"
                 else -> "正在捕获"
             },
-            "显示 ${filtered.size} / ${all.size} 行 · ERROR ${counts[LogLevel.ERROR]}" +
-                " · WARN ${counts[LogLevel.WARN]} · INFO ${counts[LogLevel.INFO]}"
+            "显示 ${filtered.size} / ${all.size} 行" +
+                " · ERROR ${levelCounts[LogLevel.ERROR] ?: 0}" +
+                " · WARN ${levelCounts[LogLevel.WARN] ?: 0}" +
+                " · INFO ${levelCounts[LogLevel.INFO] ?: 0}"
         )
         shell.refreshAdvancedToggle()
         when {
@@ -346,7 +418,7 @@ class GrepConsolePanel(private val project: Project) : Disposable {
             return
         }
         service.consume(text, GrepConsoleService.MANUAL_SOURCE, flush = true)
-        applyFilter(scrollToEnd = true)
+        scheduleFilter(scrollToEnd = true)
     }
 
     private fun showPopup(e: MouseEvent) {
@@ -364,7 +436,7 @@ class GrepConsolePanel(private val project: Project) : Disposable {
                 errorOnlyBox.isSelected = false
                 levelChips.setAll(false)
                 levelChips.setSelected(chipFor(entry.level), true)
-                applyFilter()
+                scheduleFilter(false)
             }
         })
         group.add(object : AnAction("复制全部（当前过滤结果）") {
@@ -498,6 +570,8 @@ class GrepConsolePanel(private val project: Project) : Disposable {
     companion object {
         /** DEBUG chip 同时覆盖 TRACE 与 OTHER，保证 6 个级别都能被筛到 */
         val LEVEL_CHIPS = listOf("ERROR", "WARN", "INFO", "DEBUG")
+
+        private const val REFRESH_DELAY_MS = 60L
 
         fun chipFor(level: LogLevel): String = when (level) {
             LogLevel.ERROR -> "ERROR"

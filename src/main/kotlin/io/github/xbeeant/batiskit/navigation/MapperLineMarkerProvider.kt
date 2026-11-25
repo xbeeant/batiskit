@@ -29,6 +29,8 @@ class MapperLineMarkerProvider : LineMarkerProvider {
     ) {
         // 总开关：同时装了 MybatisX 等插件时关掉，避免侧栏出现两套图标
         if (!MapperAssistSettings.getInstance().state.navigationIconsEnabled) return
+        // 一次 pass 先建好整份 XML 索引，后面每个方法 / 标签都复用它，不再逐个扫 FileTypeIndex
+        elements.firstOrNull()?.let(MapperXmlResolver::prepareIndex)
         // 单个 `<sql>` 往往被多处 include；一次 pass 内缓存解析结果，别为每个 include 重扫一遍 XML 索引
         val definitionCache = HashMap<String, List<XmlTag>>()
         val usageCache = HashMap<XmlTag, List<XmlTag>>()

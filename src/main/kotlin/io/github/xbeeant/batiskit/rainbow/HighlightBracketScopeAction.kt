@@ -43,7 +43,7 @@ class HighlightBracketScopeAction : AnAction(
 
         val caret = editor.caretModel.offset
         val analysis = ReadAction.compute<BraceLevels.Analysis, RuntimeException> {
-            BraceLevels.analyze(BraceScanner.collect(file), RainbowSettings.colorCount())
+            BraceAnalysisCache.analysis(file, RainbowSettings.colorCount())
         }
         val all = BracePairs.enclosingAll(analysis, caret)
         if (all.isEmpty()) {

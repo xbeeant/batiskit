@@ -14,6 +14,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.ui.CollectionListModel
+import com.intellij.util.Alarm
 import com.intellij.ui.ScrollPaneFactory
 import com.intellij.ui.awt.RelativePoint
 import com.intellij.ui.components.ActionLink
@@ -52,6 +53,7 @@ import java.awt.event.MouseEvent
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.WeakHashMap
 import javax.swing.JComponent
 import javax.swing.JList
 import javax.swing.JPanel
@@ -73,10 +75,10 @@ class MyBatisLogPanel(private val project: Project) : Disposable {
 
     private val settings get() = service.settings
 
-    private val search = SearchField(message("search.placeholder"), ::applyFilter)
+    private val search = SearchField(message("search.placeholder")) { scheduleFilter(false) }
 
     /** 语句类型 chip：按 SQL 首关键字归类，其它类型单列一项避免被静默过滤掉 */
-    private val statementChips = FilterChipGroup(STATEMENT_TYPES, STATEMENT_TYPES) { applyFilter() }
+    private val statementChips = FilterChipGroup(STATEMENT_TYPES, STATEMENT_TYPES) { scheduleFilter(false) }
 
     private val model = CollectionListModel<MyBatisLogEntry>()
 
@@ -101,16 +103,29 @@ class MyBatisLogPanel(private val project: Project) : Disposable {
     /** 当前过滤结果，复制全部时用 */
     private var visible: List<MyBatisLogEntry> = emptyList()
 
+    /** 一批日志只排一次 EDT 刷新；高频 SQL 输出时避免每条都全量过滤 + replaceAll */
+    private val refreshAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
+    private var refreshScrollToEnd = false
+    private var allVersion = 0
+    private var lastViewKey: String? = null
+
+    /** SQL 首关键字归类与搜索查询按内容缓存，重复刷新不再拆词/编译正则 */
+    private val statementTypes = WeakHashMap<MyBatisLogEntry, String>()
+    private var cachedSearchText: String? = null
+    private var cachedQuery: SearchQuery.Query? = null
+
     /** 服务回调（EDT），必须在 init 之前初始化 */
     private val listener = object : MyBatisLogService.Listener {
         override fun entriesAdded(entries: List<MyBatisLogEntry>) {
+            if (entries.isEmpty()) return
             all.addAll(entries)
             // 与服务端的保留条数保持一致，长时间运行不会把列表撑爆
             val limit = settings.maxEntries.coerceAtLeast(20)
             while (all.size > limit) {
                 all.removeAt(0)
             }
-            applyFilter(scrollToEnd = true)
+            allVersion++
+            scheduleFilter(scrollToEnd = true)
         }
 
         override fun entriesUpdated() {
@@ -122,7 +137,8 @@ class MyBatisLogPanel(private val project: Project) : Disposable {
             // 清空与「撤销清空」走同一条路径：重新读服务快照
             all.clear()
             all.addAll(service.snapshot())
-            applyFilter()
+            allVersion++
+            scheduleFilter(scrollToEnd = false)
         }
     }
 
@@ -131,7 +147,7 @@ class MyBatisLogPanel(private val project: Project) : Disposable {
     init {
         service.addListener(listener, this)
         all.addAll(service.snapshot())
-        applyFilter()
+        applyFilter(force = true)
     }
 
     override fun dispose() {
@@ -151,13 +167,13 @@ class MyBatisLogPanel(private val project: Project) : Disposable {
         pauseBox.toolTipText = message("check.pause.tip")
         pauseBox.addActionListener {
             service.paused = pauseBox.isSelected
-            applyFilter()
+            scheduleFilter(false)
         }
         sortBox.toolTipText = message("combo.sort.tip")
-        sortBox.addActionListener { applyFilter() }
+        sortBox.addActionListener { scheduleFilter(false) }
 
         list.selectionMode = ListSelectionModel.SINGLE_SELECTION
-        list.cellRenderer = EntryRenderer(::statementType)
+        list.cellRenderer = EntryRenderer(::statementTypeOf)
         list.addListSelectionListener { if (!it.valueIsAdjusting) updatePreview() }
         list.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
@@ -256,7 +272,6 @@ class MyBatisLogPanel(private val project: Project) : Disposable {
             split.revalidate()
         }
 
-        applyFilter()
         return shell.component
     }
 
@@ -278,7 +293,7 @@ class MyBatisLogPanel(private val project: Project) : Disposable {
 
     /** SQL 首关键字归类；未识别语句归到「其它」，不会被静默过滤掉 */
     private fun statementType(sql: String): String {
-        val first = sql.trim().split(Regex("\\s+"), limit = 2).firstOrNull().orEmpty().uppercase()
+        val first = SQL_WHITESPACE.split(sql.trim(), limit = 2).firstOrNull().orEmpty().uppercase()
         return when {
             first.startsWith("SELECT") || first.startsWith("WITH") -> "SELECT"
             first.startsWith("INSERT") || first.startsWith("REPLACE") -> "INSERT"
@@ -288,30 +303,75 @@ class MyBatisLogPanel(private val project: Project) : Disposable {
         }
     }
 
+    /** 每条语句的归类只算一次，列表渲染 / 过滤都复用 */
+    private fun statementTypeOf(entry: MyBatisLogEntry): String =
+        statementTypes.getOrPut(entry) { statementType(entry.sql) }
+
+    /** 搜索框同一段文本只在首次解析时编译正则 */
+    private fun queryOf(text: String): SearchQuery.Query {
+        if (cachedSearchText != text) {
+            cachedSearchText = text
+            cachedQuery = SearchQuery.parse(text)
+        }
+        return cachedQuery ?: SearchQuery.Query()
+    }
+
     // ------------------------------------------------------------------ 过滤 / 刷新
 
-    private fun applyFilter(scrollToEnd: Boolean = false) {
-        val query = SearchQuery.parse(search.text)
+    /** 高频日志只保留最后一次刷新请求，避免 EDT 被一批批全量过滤占满 */
+    private fun scheduleFilter(scrollToEnd: Boolean) {
+        refreshScrollToEnd = refreshScrollToEnd || scrollToEnd
+        refreshAlarm.cancelAllRequests()
+        refreshAlarm.addRequest({
+            val scroll = refreshScrollToEnd
+            refreshScrollToEnd = false
+            applyFilter(scrollToEnd = scroll)
+        }, REFRESH_DELAY_MS)
+    }
+
+    /** 输入没变且列表没变时直接跳过，避免勾选框 / 初始化触发重复全量过滤 */
+    private fun viewKey(): String = listOf(
+        allVersion,
+        search.text,
+        statementChips.selected().sorted(),
+        sortBox.selectedIndex,
+        settings.filterKeywords,
+        settings.captureEnabled,
+        service.paused,
+    ).joinToString("\u0000")
+
+    private fun applyFilter(scrollToEnd: Boolean = false, force: Boolean = false) {
+        val key = viewKey()
+        if (!force && key == lastViewKey) {
+            if (scrollToEnd && visible.isNotEmpty()) {
+                list.ensureIndexIsVisible(tailIndex())
+            }
+            return
+        }
+        lastViewKey = key
+
+        val query = queryOf(search.text)
         val types = statementChips.selected()
-        val matched = all.filter { entry ->
-            statementType(entry.sql) in types &&
+        // 还原 SQL 在 Service 里按配置版本缓存；这里每条语句只取一次，不再过滤时重复还原
+        val prepared = all.map { entry -> entry to service.restoredSql(entry, format = false) }
+        val matched = prepared.filter { (entry, restored) ->
+            statementTypeOf(entry) in types &&
                 // 还原后的 SQL 与原始日志都参与匹配：既能按参数值反查，也能按 ? 占位符搜
-                (query.isEmpty || SearchQuery.matches(service.restoredSql(entry, format = false) + "\n" + entry.sql, query))
+                (query.isEmpty || SearchQuery.matches(restored + "\n" + entry.sql, query))
         }
         // 设置里的关键字过滤是视图级的：条目仍在 all 里，清掉关键字即可恢复，不丢日志
         val keywords = splitFilterKeywords(settings.filterKeywords)
-        val keywordVisible = if (keywords.isEmpty()) matched else matched.filterNot { entry ->
-            val sql = service.restoredSql(entry, format = false)
+        val keywordVisible = if (keywords.isEmpty()) matched else matched.filterNot { (entry, restored) ->
             val raw = entry.sql
-            keywords.any { sql.contains(it, ignoreCase = true) || raw.contains(it, ignoreCase = true) }
+            keywords.any { restored.contains(it, ignoreCase = true) || raw.contains(it, ignoreCase = true) }
         }
         val hiddenCount = matched.size - keywordVisible.size
-        val filtered = sortEntries(keywordVisible)
+        val filtered = sortEntries(keywordVisible.map { it.first })
         visible = filtered
         val selected = list.selectedValue
         model.replaceAll(filtered)
         // 「最新优先」时新语句排在最前，自动滚动要跟着换方向
-        val tail = if (sortBox.selectedIndex == SORT_LATEST) 0 else filtered.lastIndex
+        val tail = tailIndex()
         if (selected != null && filtered.contains(selected)) {
             list.setSelectedValue(selected, true)
         } else if (filtered.isNotEmpty() && list.selectedIndex < 0) {
@@ -354,6 +414,8 @@ class MyBatisLogPanel(private val project: Project) : Disposable {
         }
         updatePreview()
     }
+
+    private fun tailIndex(): Int = if (sortBox.selectedIndex == SORT_LATEST) 0 else visible.lastIndex
 
     /** 按工具栏下拉重排当前过滤结果；所有比较都带 seq 兜底，顺序稳定 */
     private fun sortEntries(entries: List<MyBatisLogEntry>): List<MyBatisLogEntry> =
@@ -429,7 +491,7 @@ class MyBatisLogPanel(private val project: Project) : Disposable {
             return
         }
         service.consume(text, MyBatisLogService.MANUAL_SOURCE)
-        applyFilter(scrollToEnd = true)
+        scheduleFilter(scrollToEnd = true)
     }
 
     private fun showPopup(e: MouseEvent) {
@@ -523,7 +585,7 @@ class MyBatisLogPanel(private val project: Project) : Disposable {
      * 两行渲染：第一行 `#序号 + SQL 首行`（过长省略），第二行参数个数、结果行数、时间与来源。
      * 参数不全（占位符多于参数）时用橙色标出，提示这条日志本身缺参数行。
      */
-    private class EntryRenderer(private val typeOf: (String) -> String) :
+    private class EntryRenderer(private val typeOf: (MyBatisLogEntry) -> String) :
         JPanel(BorderLayout()), ListCellRenderer<MyBatisLogEntry> {
 
         private val badge = MethodBadge()
@@ -560,7 +622,7 @@ class MyBatisLogPanel(private val project: Project) : Disposable {
             hasFocus: Boolean
         ): Component {
             if (value != null) {
-                badge.badgeText = typeOf(value.sql)
+                badge.badgeText = typeOf(value)
                 val pathWidth = (list.width - UiTokens.scale(36) - badge.preferredSize.width).coerceAtLeast(0)
                 headline.text = UiText.ellipsize(
                     "#${value.seq}  ${value.headline}",
@@ -619,6 +681,9 @@ class MyBatisLogPanel(private val project: Project) : Disposable {
         private const val SORT_LATEST = 1
         private const val SORT_INCOMPLETE = 2
         private const val SORT_RESULT = 3
+
+        private val SQL_WHITESPACE = Regex("\\s+")
+        private const val REFRESH_DELAY_MS = 60L
 
         val STATEMENT_TYPES = listOf("SELECT", "INSERT", "UPDATE", "DELETE", message("type.other"))
 

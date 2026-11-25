@@ -13,7 +13,8 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.Key
-import java.util.*
+import java.util.Collections
+import java.util.WeakHashMap
 
 /**
  * 控制台捕获：挂在 Run / Debug 的 [ProcessHandler] 上收文本，交给 [MyBatisLogParser] 解析。
@@ -41,6 +42,21 @@ class MyBatisLogService(private val project: Project) : Disposable {
     private val entries = ArrayList<MyBatisLogEntry>()
 
     private val listeners = mutableListOf<Listener>()
+
+    /**
+     * 还原 SQL 的缓存：条目从列表里淘汰后由 WeakHashMap 自动回收，不会额外撑大内存。
+     * 设置变化会递增 [restoreGeneration]，让所有条目在下次过滤时按新配置重算一次。
+     */
+    private class RestoreCache(
+        var generation: Int,
+        var parameterCount: Int,
+        var plain: String?,
+        var formatted: String?,
+    )
+
+    private val restoredCache = Collections.synchronizedMap(WeakHashMap<MyBatisLogEntry, RestoreCache>())
+    @Volatile
+    private var restoreGeneration = 0
 
     /** 已经挂过监听的进程，避免 processStarted 重复触发时重复解析 */
     private val attached: MutableSet<ProcessHandler> =
@@ -117,6 +133,7 @@ class MyBatisLogService(private val project: Project) : Disposable {
     /** 清空列表并重置解析状态 */
     fun clear() {
         parser.reset()
+        restoredCache.clear()
         synchronized(entries) {
             entries.clear()
             sequence = 0
@@ -131,6 +148,7 @@ class MyBatisLogService(private val project: Project) : Disposable {
     /** 撤销「清空」：把快照原样放回，续上序号并通知工具窗口重新读快照 */
     fun restore(snapshot: List<MyBatisLogEntry>) {
         parser.reset()
+        restoredCache.clear()
         synchronized(entries) {
             entries.clear()
             entries.addAll(snapshot)
@@ -145,15 +163,28 @@ class MyBatisLogService(private val project: Project) : Disposable {
 
     // ------------------------------------------------------------------ 还原
 
-    /** 按当前设置还原一条语句：替换参数 → 可选格式化 → 可选补分号 */
+    /** 按当前设置还原一条语句：替换参数 → 可选格式化 → 可选补分号（结果按配置版本缓存） */
     fun restoredSql(entry: MyBatisLogEntry, format: Boolean = settings.formatSql): String {
-        val restored = SqlRestorer.restore(entry.sql, entry.parameters, settings.normalizeDate)
-        val text = if (format) {
-            SqlFormatter.format(restored.text, settings.simpleFormat, settings.newLineWithComment)
-        } else {
-            restored.text
+        val generation = restoreGeneration
+        val cached = restoredCache[entry]
+        if (cached != null && cached.generation == generation && cached.parameterCount == entry.parameters.size) {
+            val hit = if (format) cached.formatted else cached.plain
+            if (hit != null) return hit
         }
-        return withSemicolon(text)
+        // 这里复用下面的字符串重载，避免把还原逻辑复制成两份
+        val result = restoredSql(entry.sql, entry.parameters, format)
+        synchronized(restoredCache) {
+            val current = restoredCache[entry]
+            val target = if (current != null && current.generation == generation) {
+                current
+            } else {
+                RestoreCache(generation, entry.parameters.size, null, null)
+            }
+            target.parameterCount = entry.parameters.size
+            if (format) target.formatted = result else target.plain = result
+            restoredCache[entry] = target
+        }
+        return result
     }
 
     /** 文本还原工作台复用：给定独立解析结果，按同一套设置产出 SQL */
@@ -190,6 +221,8 @@ class MyBatisLogService(private val project: Project) : Disposable {
     /** 设置页 apply 之后热更新解析器并让工具窗口按新设置重绘 */
     fun settingsChanged() {
         parser.updateConfig(settings.toConfig())
+        restoreGeneration++
+        restoredCache.clear()
         notifyUpdated()
     }
 
