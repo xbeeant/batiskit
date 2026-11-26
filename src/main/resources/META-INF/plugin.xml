@@ -29,7 +29,7 @@
         <li>inspect：Mapper XML 静态检查——`#{…}` 参数绑定、语句 id 与接口方法互查（重复 id / 孤立语句 / 方法缺语句）、`${}` SQL 注入风险、返回类型与 resultType 匹配，带 Alt+Enter 修复</li>
         <li>rename：Mapper XML 重命名与 Find Usages——语句 id ↔ 接口方法双向重命名、resultMap / &lt;sql&gt; 片段定义与引用同步改写、&lt;include refid&gt; 跳转与补全、&lt;sql id&gt; 与 &lt;include&gt; 行的侧栏图标 / Ctrl+B 一处查看全部使用处、重命名接口时 namespace 与 XML 文件名跟随、resultType 等类型属性类名补全；未加 @Mapper 的接口上 Alt+Enter 补注解</li>
         <li>Mapper XML 格式化：接管 Ctrl+Alt+L，只动空白不改字符、动态 SQL 逐层缩进、SQL 正文按行保留，支持选区格式化与保存时自动格式化；总开关与缩进宽度可在 Settings 里配置</li>
-        <li>Mapper 辅助：表字段智能提示（主动读 IDE 已配置数据源 / 离线快照 / 实体类 / resultMap 四路合并，首次使用无需先选表）、SQL 上下文参数补全、Alt+Enter 按可配置方法前缀生成带表名的 CRUD SQL；导航图标总开关避免与其它 MyBatis 插件重复图标；自动记忆最近使用的数据源 / 表，不连 JDBC、不保存连接凭据</li>
+        <li>Mapper 辅助：表字段智能提示（主动读 IDE 已配置数据源 / 离线快照 / 实体类 / resultMap 四路合并，首次使用无需先选表）、参数提示（输入 # / $ 即弹，@Param / paramN / argN、foreach item 按集合泛型提示属性路径、bind 变量、OGNL test / collection）、MyBatis 语法补全（#{...,jdbcType=...} 的 JdbcType / mode 枚举、typeHandler 类名与 resultMap id、statementType / resultSetType / selectKey order、resultType 内置别名、result property / keyProperty 属性、动态标签名）、SQL 上下文参数补全、Alt+Enter 按可配置方法前缀生成带表名的 CRUD SQL；导航图标总开关避免与其它 MyBatis 插件重复图标；自动记忆最近使用的数据源 / 表，不连 JDBC、不保存连接凭据</li>
         <li>Spring API：右侧工具窗口列出全工程 Spring MVC / @Scheduled / Dubbo 接口，右键「复制完整 URL」/「复制为 cURL」，自动探测 Spring Boot 1.x / 2.x / 3.x、WebFlux、多 profile 配置下的 context path；Nacos 等配置中心的远端值会提示确认，也可手动覆盖接口地址</li>
         <li>GenerateAllSetter：光标放在对象上（或选中对象表达式），右键 / Alt+Enter 一键生成全部 setter 调用并填入按类型推导的默认值，支持继承、链式 setter、Lombok 与裸 `new X()` 语句</li>
         <li>rainbow：语言无关的彩虹括号——`()` `[]` `{}` 按嵌套层级循环着色，XML 标签尖括号与标签名可按层级着色；最多 10 层颜色并可按色相生成配色，语言 / 扩展名黑白名单可配，右键可高亮当前括号作用域（重复触发向外扩展），颜色在 Color Scheme 里改、编辑器右键可快速开关</li>
@@ -116,7 +116,6 @@
         <notificationGroup id="MyBatis Log" displayType="BALLOON"/>
         <notificationGroup id="String Manipulation" displayType="BALLOON"/>
         <notificationGroup id="Grep Console" displayType="BALLOON"/>
-        <notificationGroup id="Mapper XML 格式化" displayType="BALLOON"/>
 
         <!-- 设置 → Tools → Batis Kit → MyBatis Log（工程级） -->
         <projectConfigurable parentId="io.github.xbeeant.batiskit"
@@ -328,9 +327,19 @@
             <category>Batis Kit</category>
         </intentionAction>
 
-        <!-- Mapper XML 里 #{} / ${} 的参数补全（输入 #{ / ${ 或 . 之后提示方法支持的参数） -->
+        <!-- Mapper XML 参数提示：# / $ 起手、#{...} / ${...} 属性路径、OGNL 属性、foreach item。
+             SQL 注册用于 IDE 把语句正文注入成 SQL 的情况——此时光标 PSI 属于注入文件，
+             contributor 会先把位置映射回宿主 XML（参考 MybatisX / Free-Mybatis-Tool 的做法） -->
         <completion.contributor language="XML"
                                 implementationClass="io.github.xbeeant.batiskit.completion.MapperParamCompletionContributor"/>
+        <completion.contributor language="SQL" order="first"
+                                implementationClass="io.github.xbeeant.batiskit.completion.MapperParamCompletionContributor"/>
+        <!-- MyBatis 语法补全：#{prop,jdbcType=...} 的选项名 / JdbcType、mode 枚举值，
+             以及 statementType / resultSetType / selectKey order 等属性枚举值 -->
+        <completion.contributor language="XML"
+                                implementationClass="io.github.xbeeant.batiskit.completion.MapperSyntaxCompletionContributor"/>
+        <completion.contributor language="SQL" order="first"
+                                implementationClass="io.github.xbeeant.batiskit.completion.MapperSyntaxCompletionContributor"/>
         <!-- 表字段补全：SQL 正文里的标识符与 column 属性值（列来自 Database 快照 / 实体类 / resultMap） -->
         <completion.contributor language="XML"
                                 implementationClass="io.github.xbeeant.batiskit.completion.MapperColumnCompletionContributor"/>

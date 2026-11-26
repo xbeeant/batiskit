@@ -5,6 +5,7 @@ import com.intellij.codeInsight.completion.CompletionParameters
 import com.intellij.codeInsight.completion.CompletionResultSet
 import com.intellij.codeInsight.lookup.LookupElement
 import com.intellij.codeInsight.lookup.LookupElementBuilder
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.util.TextRange
 import com.intellij.patterns.PlatformPatterns
 import com.intellij.psi.ElementManipulators
@@ -24,6 +25,7 @@ import com.intellij.psi.xml.XmlFile
 import com.intellij.psi.xml.XmlTag
 import com.intellij.util.ProcessingContext
 import io.github.xbeeant.batiskit.navigation.MapperXmlResolver
+import io.github.xbeeant.batiskit.util.MapperTypeHints
 
 /**
  * Mapper XML 的引用体系：让平台把「语句 id / namespace / resultMap 引用 / Java 类型属性」
@@ -226,6 +228,7 @@ class MapperClassAttrCompletionContributor : CompletionContributor() {
     /** 与 MapperAttrReferenceProvider 一致的类型属性清单 */
     private val JAVA_TYPE_ATTRS = setOf("resultType", "parameterType", "ofType", "javaType", "type")
 
+
     override fun fillCompletionVariants(parameters: CompletionParameters, result: CompletionResultSet) {
         val value = parameters.originalPosition
             ?.let { PsiTreeUtil.getParentOfType(it, XmlAttributeValue::class.java, false) }
@@ -240,10 +243,6 @@ class MapperClassAttrCompletionContributor : CompletionContributor() {
         if (name !in JAVA_TYPE_ATTRS || (name == "type" && tag.name != "resultMap")) {
             return
         }
-        val reference = file.findReferenceAt(parameters.offset) as? JavaClassReference
-            ?: file.findReferenceAt(parameters.offset - 1) as? JavaClassReference
-            ?: return
-
         // 已输入前缀的最后一段（前面几段由引用负责），用它过滤变体。
         // 注意：补全时平台会在光标处插入哑元标识符，且 XmlAttributeValue.textRange 含两侧引号，
         // 因此只按「引号内的起止范围 + 光标位置」从 value.text 里截，避免把引号/哑元算进前缀。
@@ -256,6 +255,15 @@ class MapperClassAttrCompletionContributor : CompletionContributor() {
         }
         val prefix = typed.substringAfterLast('.')
         val matcher = result.withPrefixMatcher(prefix)
+        // 别名放前面：没有 JavaClassReference（比如只输入了 `ma`）时也能给出结果
+        matcher.addAllElements(MapperTypeHints.TYPE_ALIASES.map { (alias, java) ->
+            LookupElementBuilder.create(alias)
+                .withIcon(AllIcons.Nodes.Class)
+                .withTypeText("MyBatis 别名：$java", true)
+        })
+        val reference = file.findReferenceAt(parameters.offset) as? JavaClassReference
+            ?: file.findReferenceAt(parameters.offset - 1) as? JavaClassReference
+            ?: return
         matcher.addAllElements(reference.variants.mapNotNull(::toLookupElement))
     }
 

@@ -126,6 +126,9 @@ class MapperMethodInspectionTest : BasePlatformTestCase() {
         PsiDocumentManager.getInstance(project).commitAllDocuments()
 
         val root = (psiManager.findFile(myFixture.findFileInTempDir("mybatis/UserMapper.xml")) as XmlFile).rootTag!!
+        assertEquals("生成语句要追加到末尾而不是开头", 2, root.subTags.size)
+        assertEquals("list", root.subTags[0].getAttributeValue("id"))
+        assertEquals("selectByCode", root.subTags[1].getAttributeValue("id"))
         val added = root.findSubTags("select").single { it.getAttributeValue("id") == "selectByCode" }
         assertEquals("selectByCode", added.getAttributeValue("id"))
         assertEquals("应该带上解析出的返回类型", "com.example.User", added.getAttributeValue("resultType"))

@@ -31,18 +31,34 @@ class MapperParamCompletionTest : BasePlatformTestCase() {
         )
     }
 
-    private fun addMapper(methods: String) {
+    private fun addMapper(methods: String, className: String = "UserMapper") {
         myFixture.addFileToProject(
-            "com/example/mapper/UserMapper.java",
+            "com/example/mapper/$className.java",
             """
             package com.example.mapper;
 
             import org.apache.ibatis.annotations.Param;
 
-            public interface UserMapper {
+            public interface $className {
             $methods
             }
             """.trimIndent()
+        )
+    }
+
+    /** BasePlatformTestCase 不挂 JDK，自己放最小集合接口，测 `<foreach>` 的泛型推导 */
+    private fun addCollectionStubs() {
+        myFixture.addFileToProject(
+            "java/util/Iterable.java",
+            "package java.util;\npublic interface Iterable<E> {}\n",
+        )
+        myFixture.addFileToProject(
+            "java/util/Collection.java",
+            "package java.util;\npublic interface Collection<E> extends Iterable<E> {}\n",
+        )
+        myFixture.addFileToProject(
+            "java/util/List.java",
+            "package java.util;\npublic interface List<E> extends Collection<E> {}\n",
         )
     }
 
@@ -77,16 +93,16 @@ class MapperParamCompletionTest : BasePlatformTestCase() {
         )
     }
 
-    private fun mapperXml(body: String): String = """
+    private fun mapperXml(body: String, namespace: String = "com.example.mapper.UserMapper"): String = """
         <?xml version="1.0" encoding="UTF-8"?>
-        <mapper namespace="com.example.mapper.UserMapper">
+        <mapper namespace="$namespace">
         $body
         </mapper>
         """.trimIndent()
 
     /** 在语句文本的 `<caret>` 处触发补全，返回候选名字清单 */
-    private fun complete(body: String): List<String> {
-        myFixture.configureByText("UserMapper.xml", mapperXml(body))
+    private fun complete(body: String, namespace: String = "com.example.mapper.UserMapper"): List<String> {
+        myFixture.configureByText("${namespace.substringAfterLast('.')}.xml", mapperXml(body, namespace))
         myFixture.completeBasic()
         return myFixture.lookupElementStrings ?: emptyList()
     }
@@ -105,7 +121,9 @@ class MapperParamCompletionTest : BasePlatformTestCase() {
         assertTrue("应有 @Param 值 status：$names", "status" in names)
         assertTrue("应有参数名 userName：$names", "userName" in names)
         assertTrue("应有 param1：$names", "param1" in names)
+        assertTrue("多参数应有 param2：$names", "param2" in names)
         assertTrue("应有 arg0：$names", "arg0" in names)
+        assertTrue("多参数应有 arg1：$names", "arg1" in names)
         assertTrue("应有 _parameter：$names", "_parameter" in names)
         assertTrue("应有 _databaseId：$names", "_databaseId" in names)
     }
@@ -126,6 +144,77 @@ class MapperParamCompletionTest : BasePlatformTestCase() {
         assertTrue("应有 foreach 的 item：$names", "item" in names)
         assertTrue("应有 foreach 的 index：$names", "i" in names)
         assertTrue("应有参数 suffix：$names", "suffix" in names)
+    }
+
+    fun `test 输入 # 或 $ 就提示参数`() {
+        addParamAnnotationStub()
+        addMapper("    void list(@Param(\"status\") String status, String userName);", "MarkerMapper")
+        val ns = "com.example.mapper.MarkerMapper"
+        val hash = complete("<select id=\"list\">select * from t where name = #<caret></select>", ns)
+        assertTrue("输入 # 就应提示注解参数：$hash", "status" in hash)
+        assertTrue("输入 # 就应提示第二个参数：$hash", "userName" in hash)
+        val dollar = complete("<select id=\"list\">select * from t where name = $<caret></select>", ns)
+        assertTrue("输入 $ 就应提示参数：$dollar", "status" in dollar)
+    }
+
+    fun `test foreach item 按 collection 泛型提示属性`() {
+        addParamAnnotationStub()
+        addCollectionStubs()
+        addUserPojo()
+        addMapper("    void batch(@Param(\"users\") java.util.List<com.example.User> users);", "ForeachItemMapper")
+        val names = complete(
+            """
+            <update id="batch">
+                <foreach collection="users" item="user" separator=",">
+                    name = #{user.<caret>}
+                </foreach>
+            </update>
+            """.trimIndent(),
+            "com.example.mapper.ForeachItemMapper",
+        )
+        assertTrue("item 应提示元素类型字段 userName：$names", "userName" in names)
+        assertTrue("item 应提示元素类型字段 id：$names", "id" in names)
+    }
+
+    fun `test foreach 的 collection 与 OGNL test 属性提示参数`() {
+        addParamAnnotationStub()
+        addUserPojo()
+        addMapper("    void batch(@Param(\"user\") com.example.User user);", "OgnlMapper")
+        val ns = "com.example.mapper.OgnlMapper"
+        val collection = complete(
+            """
+            <select id="batch">
+                <foreach collection="<caret>" item="item">#{item}</foreach>
+            </select>
+            """.trimIndent(),
+            ns,
+        )
+        assertTrue("collection 应提示参数名：$collection", "user" in collection)
+
+        val test = complete(
+            """
+            <select id="batch">
+                <if test="user.<caret>">id = #{user.id}</if>
+            </select>
+            """.trimIndent(),
+            ns,
+        )
+        assertTrue("test 属性应提示参数字段：$test", "userName" in test)
+    }
+
+    fun `test bind 声明的变量随后可提示`() {
+        addParamAnnotationStub()
+        addMapper("    void list(@Param(\"name\") String name);", "BindMapper")
+        val names = complete(
+            """
+            <select id="list">
+                <bind name="pattern" value="'%' + name + '%'"/>
+                select * from t where name like #{<caret>}
+            </select>
+            """.trimIndent(),
+            "com.example.mapper.BindMapper",
+        )
+        assertTrue("bind 声明的 pattern 应可提示：$names", "pattern" in names)
     }
 
     fun `test 单参数 POJO 未注解时提示属性`() {

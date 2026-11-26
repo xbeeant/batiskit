@@ -22,6 +22,7 @@ import com.intellij.psi.xml.XmlTag
 import io.github.xbeeant.batiskit.meta.MapperSqlRules
 import io.github.xbeeant.batiskit.meta.MapperStatementSql
 import io.github.xbeeant.batiskit.navigation.MapperXmlResolver
+import io.github.xbeeant.batiskit.navigation.MapperXmlStatementWriter
 import io.github.xbeeant.batiskit.navigation.selectResultType
 import io.github.xbeeant.batiskit.navigation.statementKind
 
@@ -145,15 +146,15 @@ class MapperMethodInspection : LocalInspectionTool(), DumbAware {
             if (!IntentionPreviewUtils.prepareElementForWrite(root)) {
                 return
             }
+            var added: XmlTag? = null
             IntentionPreviewUtils.write<RuntimeException> {
                 // select 缺 resultType 时 MyBatis 同样起不来，注释里点名提醒
                 val note = if (kind == "select" && resultType == null) "补充 resultType" else null
                 val skeleton = MapperSqlRules.statementXml(kind, methodName, resultType, sql, note)
-                val wrapper = PsiFileFactory.getInstance(project)
-                    .createFileFromText("mybatis-statement.xml", XmlFileType.INSTANCE, "<mapper>$skeleton</mapper>") as? XmlFile
-                val created = wrapper?.rootTag?.subTags?.firstOrNull() ?: return@write
-                root.addSubTag(created.copy() as XmlTag, true)
+                added = MapperXmlStatementWriter.append(project, root, skeleton, methodName)
             }
+            // 生成后打开目标 XML 并定位到新片段
+            added?.let { MapperXmlStatementWriter.navigateTo(project, it.containingFile, methodName) }
         }
 
         /**

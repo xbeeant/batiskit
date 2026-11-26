@@ -1,5 +1,6 @@
 package io.github.xbeeant.batiskit.navigation
 
+import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiJavaFile
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
@@ -104,6 +105,48 @@ class MapperNavigationTest : BasePlatformTestCase() {
         val tags = xml.findSubTags("insert")
         assertEquals(1, tags.size)
         assertEquals("insert", tags[0].getAttributeValue("id"))
+    }
+
+    fun `test intention 把生成语句追加到 XML 末尾并保持缩进`() {
+        myFixture.addFileToProject(
+            "mybatis/mysql/demo/UserMapper.xml",
+            """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <mapper namespace="com.example.mapper.UserMapper">
+                <select id="selectById">select 1</select>
+            </mapper>
+            """.trimIndent()
+        )
+        myFixture.configureByText(
+            "UserMapper.java",
+            """
+            package com.example.mapper;
+
+            public interface UserMapper {
+                int <caret>insert(User record);
+            }
+            """.trimIndent()
+        )
+
+        val intention = myFixture.findSingleIntention("在 Mapper XML 中生成对应语句")
+        myFixture.launchAction(intention)
+
+        val xmlFile = psiManager.findFile(
+            myFixture.findFileInTempDir("mybatis/mysql/demo/UserMapper.xml")
+        ) as com.intellij.psi.xml.XmlFile
+        val tags = xmlFile.rootTag!!.subTags
+        assertEquals(2, tags.size)
+        assertEquals("selectById", tags[0].getAttributeValue("id"))
+        assertEquals("insert", tags[1].getAttributeValue("id"))
+
+        val document = PsiDocumentManager.getInstance(project).getDocument(xmlFile)!!
+        val lines = document.text.lines()
+        val insertLine = lines.first { it.contains("<insert id=\"insert\"") }
+        assertEquals("    <insert id=\"insert\">", insertLine)
+        // 新片段与已有语句之间恰好留一个空行
+        val insertIndex = lines.indexOf(insertLine)
+        assertEquals("", lines[insertIndex - 1])
+        assertTrue(lines[insertIndex - 2].contains("<select id=\"selectById\""))
     }
 
     fun `test resultMap 引用解析到定义`() {

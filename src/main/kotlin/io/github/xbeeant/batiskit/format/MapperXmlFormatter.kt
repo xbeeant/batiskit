@@ -69,7 +69,7 @@ object MapperXmlFormatter {
 
     /**
      * 与 [format] 同一套规则，但解析失败（标签不自洽）时返回 null 而不是原样返回，
-     * 调用方可以借此给用户明确提示，避免「按了格式化却整篇没动静」。
+     * 调用方据此静默跳过本次格式化，不弹窗打扰用户。
      */
     fun formatOrNull(text: String, options: Options = Options()): String? {
         if (!isMapperXml(text)) return text
@@ -83,7 +83,7 @@ object MapperXmlFormatter {
 
     /**
      * 格式化**选区片段**：不要求 `<mapper>` 根标签，但片段里的标签必须自洽
-     * （未闭合 / 被截断时返回 null，调用方据此给用户明确提示，而不是静默跳过）。
+     * （未闭合 / 被截断时返回 null，调用方据此静默跳过本次格式化）。
      *
      * [baseIndent] 是片段在原文里的起始缩进，格式化结果整体平移，保持与上下文对齐。
      * 片段内部的行一律按 level 0 起算，所以平移是纯粹的「整体加前缀」，不会重复叠加。
@@ -534,9 +534,11 @@ object MapperXmlFormatter {
      * 联合缩进的核心：一段文本（SQL 正文 / CDATA 等）按行重排。
      *
      * - 首尾空行丢弃，中间连续空行收敛为一行，行尾空白去掉；
-     * - 非空行的前导宽度都是缩进单位的整数倍时，取**最小值作基线**，每行输出
+     * - 取所有非空行前导宽度的**最小值作基线**，每行输出
      *   `indent(level) + (该行宽度 - 基线)`：SQL 内部的相对层次逐行保留，整体挂在 XML 层级上；
-     * - 出现不规整的零散空格（如 3 个空格）时没有可信基线，全部按 XML 层级对齐；
+     * - 只有当每行相对基线的增量都是缩进单位的整数倍时才认可这些层次；比如原文整体从
+     *   2 空格起排但从 4 空格开始写字段，相对增量 0/4/8 仍然可信，字段不会再被压平到
+     *   与 SELECT 同一级。零散乱缩进（如 3/2 空格混杂）没有可信层次，全部按 XML 层级对齐；
      * - [keepOpen] 表示这段文本后面还要接内联标签（`AND id IN <foreach>`），最后一行
      *   不结束，且保留行尾空白作为分隔；
      * - [lineBreakBefore] 为 false 且当前行还开着时，本段第一行接在上一行末尾（不另起行）。
@@ -559,8 +561,9 @@ object MapperXmlFormatter {
 
         val unit = emitter.options.safeIndent
         val nonBlank = (first..last).filter { parsed[it].content.isNotEmpty() }
-        val aligned = nonBlank.all { parsed[it].columns % unit == 0 }
-        val baseline = if (aligned) nonBlank.minOf { parsed[it].columns } else 0
+        val baseline = nonBlank.minOf { parsed[it].columns }
+        // 相对基线而非绝对列数判断是否对齐：原文从 2/6/10 空格起排时相对层次同样可信
+        val aligned = nonBlank.all { (parsed[it].columns - baseline) % unit == 0 }
         val base = emitter.options.indent(level)
         var previousBlank = false
         for (i in first..last) {

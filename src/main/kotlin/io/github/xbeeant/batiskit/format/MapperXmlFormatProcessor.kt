@@ -1,8 +1,6 @@
 package io.github.xbeeant.batiskit.format
 
 import com.intellij.ide.highlighter.XmlFileType
-import com.intellij.notification.NotificationGroupManager
-import com.intellij.notification.NotificationType
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -51,14 +49,13 @@ class MapperXmlExternalFormatter : ExternalFormatProcessor {
         if (original.isBlank()) return range
         val wholeFile = start == 0 && end >= document.textLength
         val formatted = if (wholeFile) {
-            // 返回 null 表示整篇标签不自洽：给提示，而不是静默把原文丢回去（看起来就像「没缩进」）
             MapperXmlFormatter.formatOrNull(fullText, options)
         } else {
             // indentAt 给出选区起点所在的层级缩进，格式化后整体平移，和上下文对齐
             MapperXmlFormatter.formatFragment(original, MapperXmlFormatter.indentAt(fullText, start, options).length, options)
         }
         if (formatted == null) {
-            notifyFormatFailure(source.project, wholeFile, original)
+            // 标签不自洽（选区截断 / SQL 里裸写 <）时静默跳过：格式化失败不弹窗打扰用户
             return range
         }
         if (formatted == original) return range
@@ -90,30 +87,6 @@ class MapperXmlExternalFormatter : ExternalFormatProcessor {
     }
 }
 
-/** 解析失败时给一次明确反馈，不再「按了没反应 / 看起来没缩进」 */
-private fun notifyFormatFailure(project: Project, wholeFile: Boolean, original: String = "") {
-    // 带上选区首尾行：用户往往以为自己选了完整语句，实际差了一行标签，看原文就能自己定位
-    val detail = if (wholeFile) "" else {
-        val lines = original.lines().map { it.trim() }.filter { it.isNotEmpty() }
-        val head = lines.firstOrNull()?.take(50) ?: ""
-        val tail = lines.lastOrNull()?.take(50) ?: ""
-        if (head.isEmpty()) "" else "\n选区首行：$head\n选区末行：$tail"
-    }
-    NotificationGroupManager.getInstance()
-        .getNotificationGroup("Mapper XML 格式化")
-        .createNotification(
-            if (wholeFile) "Mapper XML 标签不完整，已跳过格式化" else "选区内的 XML 标签不完整，已跳过格式化",
-            if (wholeFile) {
-                "请检查未闭合或多余的标签后重试；常见原因是 SQL 正文里裸写了 `<`（建议写成 `&lt;`）。"
-            } else {
-                "选区里的标签必须成对完整：少了开标签或闭合标签（例如只选到 SQL 正文却没带上 `</select>`）、" +
-                    "只选了开标签这一行、或选区停在标签属性中间把标签切成半行，都会跳过。" +
-                    "请选中完整语句后重试，或用右键「格式化 Mapper XML」格式化整文件。" + detail
-            },
-            NotificationType.WARNING,
-        ).notify(project)
-}
-
 /** 编辑器右键 / Project View 右键：对当前 Mapper XML 整文件格式化（不依赖代码风格设置） */
 class MapperXmlFormatAction : AnAction("格式化 Mapper XML（Batis Kit）") {
 
@@ -138,10 +111,8 @@ class MapperXmlFormatAction : AnAction("格式化 Mapper XML（Batis Kit）") {
         /** 对外复用：工具窗口等地方也可以直接对 Document 做格式化 */
         fun formatDocument(project: Project, document: Document) {
             val formatted = MapperXmlFormatter.formatOrNull(document.text, MapperXmlFormatSettings.getInstance().options())
-            if (formatted == null) {
-                notifyFormatFailure(project, wholeFile = true)
-                return
-            }
+            // 解析失败静默跳过，不弹窗提醒
+            if (formatted == null) return
             if (formatted == document.text) return
             WriteCommandAction.runWriteCommandAction(project, "格式化 Mapper XML", "BatisKit", {
                 document.replaceString(0, document.textLength, formatted)

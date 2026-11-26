@@ -545,6 +545,31 @@ AND u.name = #{name}
     }
 
     @Test
+    fun `SQL 从非整单位列起排时内部相对层次仍保留`() {
+        // 原文整体从 2 空格起排（2 / 6 / 10），相对基线差 0 / 4 / 8 是完整层次，
+        // 不能因为绝对列数不是 4 的倍数就把字段 / WHERE 压平到与 SELECT 同一级
+        val doc = "<mapper namespace=\"a.b\">\n" +
+            "<select id=\"x\">\n" +
+            "  SELECT 1\n" +
+            "      FROM t\n" +
+            "          WHERE id = #{id}\n" +
+            "</select>\n" +
+            "</mapper>"
+        val out = MapperXmlFormatter.format(doc)
+        assertEquals(
+            listOf(
+                "    <select id=\"x\">",
+                "        SELECT 1",
+                "            FROM t",
+                "                WHERE id = #{id}",
+                "    </select>",
+            ),
+            mapperBody(out),
+        )
+        assertEquals(out, MapperXmlFormatter.format(out))
+    }
+
+    @Test
     fun `零散的 3 空格乱缩进仍按 XML 层级规整`() {
         val doc = "<mapper namespace=\"a.b\">\n" +
             "<select id=\"x\">\n" +

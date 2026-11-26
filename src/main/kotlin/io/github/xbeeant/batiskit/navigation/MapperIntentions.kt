@@ -4,15 +4,10 @@ import com.intellij.codeInsight.intention.PsiElementBaseIntentionAction
 import com.intellij.codeInsight.intention.preview.IntentionPreviewInfo
 import com.intellij.psi.PsiFile
 import com.intellij.openapi.command.WriteCommandAction
-import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.editor.Editor
-import com.intellij.openapi.editor.ScrollType
-import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiClass
-import com.intellij.psi.PsiManager
 import com.intellij.psi.PsiClassType
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFileFactory
@@ -156,7 +151,7 @@ class GenerateXmlStatementIntention : PsiElementBaseIntentionAction() {
                     val root = createMapperXml(project, clazz) ?: return@runWriteCommandAction
                     added = appendStatement(project, method, root)
                 }
-                added?.let { navigateTo(project, it.containingFile, method.name) }
+                added?.let { MapperXmlStatementWriter.navigateTo(project, it.containingFile, method.name) }
             }
         }
     }
@@ -165,12 +160,9 @@ class GenerateXmlStatementIntention : PsiElementBaseIntentionAction() {
         if (root == null) {
             return
         }
-        var added: XmlTag? = null
-        WriteCommandAction.runWriteCommandAction(root.project) {
-            added = appendStatement(project, method, root)
-        }
-        // 写动作完成后打开目标文件并定位到新语句
-        added?.let { navigateTo(project, it.containingFile, method.name) }
+        // appendStatement 自己开写命令；写动作完成后打开目标文件并定位到新语句
+        val added = appendStatement(project, method, root)
+        added?.let { MapperXmlStatementWriter.navigateTo(project, it.containingFile, method.name) }
     }
 
     /** 多个 XML 文件都绑定同一 namespace 时，让用户选择语句落点（条目用包装类型，平台禁止 PsiElement 直接做弹窗模型） */
@@ -235,51 +227,13 @@ class GenerateXmlStatementIntention : PsiElementBaseIntentionAction() {
         return path.take(head) + "..." + path.takeLast(tail)
     }
 
-    /** 组装语句（有表结构时预填 CRUD SQL）并追加到根标签末尾，返回新标签（用于生成后跳转） */
+    /** 组装语句（有表结构时预填 CRUD SQL）并追加到根标签**末尾**，返回新标签（用于生成后跳转） */
     private fun appendStatement(project: Project, method: PsiMethod, root: XmlTag): XmlTag? {
         val kind = statementKind(method.name)
         val resultType = if (kind == "select") selectResultType(method) else null
         val sql = MapperStatementSql.build(project, method, kind, root.containingFile as? XmlFile)
-        // 经临时 XmlFile 解析出语句标签再挂到根标签下（避免依赖已移除的 XmlElementFactory）
         val statementText = MapperSqlRules.statementXml(kind, method.name, resultType, sql)
-        val wrapper = PsiFileFactory.getInstance(project).createFileFromText(
-            "statement.xml", XmlFileType.INSTANCE, "<mapper>$statementText</mapper>"
-        ) as? XmlFile
-        val tag = wrapper?.rootTag?.subTags?.firstOrNull()
-        val copied = tag?.copy() as? XmlTag
-        if (copied != null) {
-            root.addSubTag(copied, true)
-            return copied
-        }
-        return null
-    }
-
-    /**
-     * 打开语句所在文件并定位到该片段。
-     * 延迟到 EDT 队列（nonModal，避免被 intention 弹窗收尾的模态状态吞掉）；
-     * openFile / PSI 读取包在 read action 里——裸 EDT 调用会抛
-     * "Read access is allowed from inside read-action only" 且被 invokeLater 静默吞掉，表现为不跳转；
-     * 这里用 Application#runReadAction（2016 起就有），不用 2024.2 才引入的
-     * WriteIntentReadAction，以便插件能兼容 2024.1；打开文件与读 PSI 只需要读锁。
-     * 打开后按 id 重新解析语句位置（写命令提交前预取的 textOffset 可能过期）。
-     */
-    private fun navigateTo(project: Project, xmlFile: PsiFile?, statementId: String) {
-        val vf = xmlFile?.virtualFile ?: return
-        ApplicationManager.getApplication().invokeLater({
-            if (!vf.isValid) {
-                return@invokeLater
-            }
-            ApplicationManager.getApplication().runReadAction {
-                FileEditorManager.getInstance(project).openFile(vf, true)
-                val psi = PsiManager.getInstance(project).findFile(vf) as? XmlFile
-                val target = psi?.rootTag?.subTags?.firstOrNull { it.getAttributeValue("id") == statementId }
-                val editor = FileEditorManager.getInstance(project).selectedTextEditor
-                if (target != null && editor != null && editor.virtualFile == vf) {
-                    editor.caretModel.moveToOffset(target.textOffset)
-                    editor.scrollingModel.scrollToCaret(ScrollType.CENTER)
-                }
-            }
-        }, ModalityState.nonModal())
+        return MapperXmlStatementWriter.append(project, root, statementText, method.name)
     }
 
     /**
