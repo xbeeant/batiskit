@@ -105,4 +105,71 @@ class SqlStatementMatcherTest {
             SqlStatementMatcher.score(logSql, dynamic) >= SqlStatementMatcher.MIN_SCORE
         )
     }
+
+    @Test
+    fun `分页插件追加的 LIMIT 不影响匹配`() {
+        val xml = "SELECT id, name FROM t_user WHERE id = #{id} ORDER BY id DESC"
+        val paged = "SELECT id, name FROM t_user WHERE id = ? ORDER BY id DESC LIMIT ?, ?"
+        assertEquals(
+            "SELECT id, name FROM t_user WHERE id = ? ORDER BY id DESC",
+            SqlStatementMatcher.stripPagination(paged),
+        )
+        val score = SqlStatementMatcher.score(paged, xml)
+        assertTrue("分页 SQL 应仍与 XML 匹配，实际 $score", score >= 70)
+    }
+
+    @Test
+    fun `分页 count 包装还原内部 SELECT 后能准确命中`() {
+        val right = candidate("selectById", "SELECT id, name FROM t_user WHERE id = #{id}")
+        val wrong = candidate("selectOrder", "SELECT id, name FROM t_order WHERE id = #{id}")
+        val countSql = "SELECT count(0) FROM (SELECT id, name FROM t_user WHERE id = ?) tmp_count"
+
+        assertEquals(
+            "SELECT id, name FROM t_user WHERE id = ?",
+            SqlStatementMatcher.stripPagination(countSql),
+        )
+        val matches = SqlStatementMatcher.rank(countSql, listOf(wrong, right))
+        assertTrue("应命中原语句，实际 $matches", matches.firstOrNull()?.candidate?.id == "selectById")
+        assertTrue("分页 count 也应能直接跳转，实际 $matches", SqlStatementMatcher.isClearWinner(matches))
+    }
+
+    @Test
+    fun `优化后的 count 查询按 from 之后的语句匹配`() {
+        val right = candidate("selectById", "SELECT id, name FROM t_user WHERE id = #{id}")
+        val wrong = candidate("selectOrder", "SELECT id, name FROM t_order WHERE id = #{id}")
+        val optimizedCount = "SELECT COUNT(*) FROM t_user WHERE id = ?"
+
+        val matches = SqlStatementMatcher.rank(optimizedCount, listOf(wrong, right))
+        assertTrue("应命中原语句，实际 $matches", matches.firstOrNull()?.candidate?.id == "selectById")
+        assertTrue("count 优化后的日志也能直接跳转，实际 $matches", SqlStatementMatcher.isClearWinner(matches))
+    }
+
+    @Test
+    fun `SQLServer 与 Oracle 的分页壳也能剥掉`() {
+        val base = "SELECT id, name FROM t_user WHERE id = ?"
+        assertEquals(
+            base,
+            SqlStatementMatcher.stripPagination("$base OFFSET ? ROWS FETCH NEXT ? ROWS ONLY"),
+        )
+        assertEquals(
+            base,
+            SqlStatementMatcher.stripPagination("SELECT * FROM ($base) WHERE ROWNUM <= ?"),
+        )
+    }
+
+    @Test
+    fun `include 引用的 SQL 片段内联后列名参与匹配`() {
+        val fragments = mapOf(
+            "Base_Column_List" to "id, name FROM t_user",
+            "UserMapper.Base_Column_List" to "id, name FROM t_user",
+        )
+        val xml = "<select id=\"x\">SELECT <include refid=\"Base_Column_List\"/> WHERE id = #{id}</select>"
+        val expanded = SqlStatementMatcher.inlineIncludes(xml, fragments)
+        assertFalse("include 应被展开", expanded.contains("<include"))
+        assertTrue("片段内容应进入候选", expanded.contains("id, name FROM t_user"))
+        assertTrue(
+            "内联后应与日志匹配，实际 ${SqlStatementMatcher.score(logSql, xml)}",
+            SqlStatementMatcher.score(logSql, expanded) >= 70,
+        )
+    }
 }

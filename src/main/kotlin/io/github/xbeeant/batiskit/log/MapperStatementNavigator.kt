@@ -36,19 +36,39 @@ object MapperStatementNavigator {
     internal fun collect(project: Project): List<NavItem> {
         val manager = PsiManager.getInstance(project)
         val scope = GlobalSearchScope.projectScope(project)
+        val mappers = FileTypeIndex.getFiles(XmlFileType.INSTANCE, scope).mapNotNull { vf ->
+            val root = (manager.findFile(vf) as? XmlFile)?.rootTag ?: return@mapNotNull null
+            if (root.name != "mapper") return@mapNotNull null
+            Triple(vf, root, root.getAttributeValue("namespace").orEmpty())
+        }
+
+        // 先把 <sql> 片段收齐：<include refid="..."/> 里的列名/表名不内联的话，
+        // 日志 SQL 与候选会缺一大半词元，分页插件再改写字面量后几乎必然排错。
+        val fragments = HashMap<String, String>()
+        mappers.forEach { (_, root, namespace) ->
+            root.subTags.forEach { tag ->
+                if (tag.name != "sql") return@forEach
+                val id = tag.getAttributeValue("id")?.trim().orEmpty()
+                if (id.isEmpty()) return@forEach
+                fragments[id] = tag.text
+                if (namespace.isNotEmpty()) fragments["$namespace.$id"] = tag.text
+            }
+        }
+
         val out = mutableListOf<NavItem>()
-        FileTypeIndex.getFiles(XmlFileType.INSTANCE, scope).forEach { vf ->
-            val file = manager.findFile(vf) as? XmlFile ?: return@forEach
-            val root = file.rootTag ?: return@forEach
-            if (root.name != "mapper") return@forEach
-            val namespace = root.getAttributeValue("namespace").orEmpty()
+        mappers.forEach { (vf, root, namespace) ->
             root.subTags.forEach { tag ->
                 if (!MapperXmlResolver.isStatementTag(tag)) return@forEach
                 val id = tag.getAttributeValue("id")?.trim().orEmpty()
                 if (id.isEmpty()) return@forEach
                 val fqn = if (namespace.isEmpty()) id else "$namespace.$id"
                 out += NavItem(
-                    candidate = SqlStatementMatcher.Candidate(id, namespace, tag.text, "$fqn@${vf.path}"),
+                    candidate = SqlStatementMatcher.Candidate(
+                        id,
+                        namespace,
+                        SqlStatementMatcher.inlineIncludes(tag.text, fragments),
+                        "$fqn@${vf.path}",
+                    ),
                     file = vf,
                     offset = tag.textOffset,
                     label = "$fqn  (${tag.name}, ${vf.name})"
@@ -98,15 +118,22 @@ object MapperStatementNavigator {
         targets: List<Pair<Int, NavItem>>,
         feedback: (String, NotificationType) -> Unit
     ) {
-        val choices = targets.associateBy { "${it.second.label}  ·  ${it.first} 分" }
-        JBPopupFactory.getInstance()
-            .createPopupChooserBuilder(choices.keys.sorted())
+        // targets 已按分数降序；这里必须保留顺序，按 label 排序会把最佳候选埋到字母序里
+        val choices = LinkedHashMap<String, NavItem>()
+        for ((score, item) in targets) {
+            choices.putIfAbsent("${item.label}  ·  $score 分", item)
+        }
+        val labels = choices.keys.toList()
+        val builder = JBPopupFactory.getInstance()
+            .createPopupChooserBuilder(labels)
             .setTitle("选择 Mapper XML 语句（按相似度排序）")
-            .setItemChosenCallback { chosen ->
-                choices[chosen]?.second?.let { open(project, it, feedback) }
+            .setItemChosenCallback { chosen: String ->
+                choices[chosen]?.let { open(project, it, feedback) }
             }
-            .createPopup()
-            .showInFocusCenter()
+        if (labels.isNotEmpty()) {
+            builder.setSelectedValue(labels.first(), true)
+        }
+        builder.createPopup().showInFocusCenter()
     }
 
     private fun open(project: Project, item: NavItem, feedback: (String, NotificationType) -> Unit) {

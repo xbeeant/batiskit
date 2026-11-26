@@ -4,7 +4,7 @@
 
 插件展示名为 **BatisKit**；插件 ID 沿用 `org.xstudio.plugin.idea`，Marketplace 的升级链路与评分不受影响。
 
-版本 `2.0.0` · IntelliJ IDEA `2024.1+`（build 241）· Kotlin / JVM 17 · 235 个 Kotlin 源文件 · 935 项自动化测试
+IntelliJ IDEA `2024.1+`（build 241）· Kotlin / JVM 17
 
 - [它解决什么问题](#1-它解决什么问题)
 - [环境要求与安装](#2-环境要求与安装)
@@ -416,9 +416,6 @@ bash gradlew test
 
 ## 13. 常见问题
 
-**生成的代码编译不过，报找不到 `BaseModelObject` 之类的类？**
-选了 `mybatis` / `mybatis-plus` 方案，它们继承内部框架的基类。改用 `mybatis-pure` 或 `mybatis-plus-pure`。
-
 **Database 视图里没有「生成代码」？**
 需要带 Database Tools 的 IDE 并已配置数据源；`com.intellij.database` 是强依赖，Community 版不受支持。
 
@@ -444,4 +441,4 @@ MyBatis-Plus 方案需要注册 `PaginationInnerInterceptor`；纯 MyBatis 方�
 | [.github/workflows/ci.yml](.github/workflows/ci.yml) | 测试、打包、兼容校验与发布流水线 |
 | [.impeccable.md](.impeccable.md) | 界面设计准则 |
 
-维护者：Beeant · 组织 `io.github.xbeeant` · 插件 ID `org.xstudio.plugin.idea`
+维护者：Beeant · 组织 `io.github.xbeeant` · 插件 ID `io.github.xbeeant.batiskit`
